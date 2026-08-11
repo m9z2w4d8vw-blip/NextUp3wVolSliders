@@ -203,13 +203,24 @@ afterwards, with a 1/16-step tolerance, so a selector that answers YES and does 
 longer terminates the chain. Reads take the same route, so the level the row displays is the
 level you can hear.
 
-Colours are **copied from the scrubber** rather than approximated: `NUVolumeCopyScrubberColors`
-walks `timeControlsView` for the widest bar-shaped view with a real background colour (the
-track) and the widest such view inside it (the fill), identified by shape rather than class
-name so a rename degrades to the built-in colours instead of breaking. "The same colour as
-the slider that shows the song time" is then true by construction, in either appearance. The
-fill brightens while held — that is half of the swell, and getting it wrong was what made the
-row look permanently mid-drag.
+Colours are **measured off Apple's own scrubber**, per appearance. Reading them at runtime
+was tried first — walk `timeControlsView` for the bar-shaped views and copy their background
+colours — and it picked the wrong views: it produced a fully transparent track and a 0.23
+fill, matching neither Apple's numbers nor the built-in ones. With no way to read
+MediaRemoteUI's log there is no way to debug that blind, so the values are pinned instead:
+
+| | track | fill |
+| --- | --- | --- |
+| dark platter | white 0.16 | white 0.80 |
+| light platter | black 0.13 | black 0.48 |
+
+Those are composite alphas over the platter. Apple does not use one alpha for both
+appearances — the track alphas are close, the fill alphas are nowhere near — which is why any
+single number looks right in one appearance and wrong in the other. And since our fill is a
+*subview* of the track it composites over it, so its own alpha is not the measured number:
+for white over white, `af = (total - at) / (1 - at)`, giving 0.76 dark and 0.40 light. The
+fill brightens while held; getting that backwards is what made the row look permanently
+mid-drag.
 
 Three things about the track are load-bearing, and each was a bug first:
 

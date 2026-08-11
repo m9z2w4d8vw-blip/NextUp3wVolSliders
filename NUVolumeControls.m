@@ -219,53 +219,26 @@ void NUVolumeInstallHUDSuppressor(UIView *host) {
     gNUHUDSuppressor = suppressor;
 }
 
-#pragma mark - Matching the scrubber
-
-// The scrubber is a track view with a fill view inside it, both plain background colours on
-// every build checked. Rather than approximating them, read them: "the same colour as the
-// slider that shows the song time" is then true by construction, in either appearance, and
-// stays true if Apple restyles it.
-//
-// Identified by shape, not class name: within timeControlsView, the widest short-and-wide
-// view with a real background colour is the track, and the widest such view INSIDE that is
-// the fill. Anything unexpected simply fails the checks and the row keeps its own colours.
-BOOL NUVolumeCopyScrubberColors(UIView *nowPlayingView, UIColor **outTrack, UIColor **outFill) {
-    if (![nowPlayingView respondsToSelector:@selector(timeControlsView)]) return NO;
-    UIView *time = [(MRUNowPlayingView *)nowPlayingView timeControlsView];
-    if (!time) return NO;
-
-    UIView *track = nil;
-    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithArray:time.subviews];
-    while (queue.count) {
-        UIView *v = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        [queue addObjectsFromArray:v.subviews];
-        CGSize sz = v.bounds.size;
-        BOOL barShaped = sz.width > 80.0 && sz.height > 1.0 && sz.height < 24.0;
-        if (!barShaped || !v.backgroundColor) continue;
-        if (CGColorGetAlpha(v.backgroundColor.CGColor) < 0.01) continue;
-        if (!track || sz.width > track.bounds.size.width) track = v;
-    }
-    if (!track) return NO;
-
-    UIView *fill = nil;
-    for (UIView *v in track.subviews) {
-        if (!v.backgroundColor || CGColorGetAlpha(v.backgroundColor.CGColor) < 0.01) continue;
-        if (v.bounds.size.height < 1.0) continue;
-        if (!fill || v.bounds.size.width > fill.bounds.size.width) fill = v;
-    }
-    if (!fill) return NO;
-
-    if (outTrack) *outTrack = track.backgroundColor;
-    if (outFill) *outFill = fill.backgroundColor;
-    return YES;
-}
-
 #pragma mark - Our own strip
 
 // Same adaptive foreground as NUNextUpRowView: the lock-screen player follows
 // light/dark on every supported version, and Increase Contrast lifts translucent
 // foregrounds toward opaque.
+// Apple's scrubber does not use one alpha for both appearances, so neither can this.
+// Measured off-device from screenshots of the real scrubber, as composite alpha over the
+// platter: dark platter track 0.16 / fill 0.80, light platter track 0.13 / fill 0.48. The
+// track alphas are close; the fill alphas are not, which is why a single number always
+// looked right in one appearance and wrong in the other.
+static UIColor *NUVolumeAppearanceColor(CGFloat darkAlpha, CGFloat lightAlpha) {
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
+        BOOL dark = (tc.userInterfaceStyle == UIUserInterfaceStyleDark);
+        CGFloat a = dark ? darkAlpha : lightAlpha;
+        if (tc.accessibilityContrast == UIAccessibilityContrastHigh && a >= 0.4)
+            a = a + (1.0 - a) * 0.5;
+        return [UIColor colorWithWhite:(dark ? 1.0 : 0.0) alpha:a];
+    }];
+}
+
 static UIColor *NUVolumeColor(CGFloat alpha) {
     return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
         CGFloat w = (tc.userInterfaceStyle == UIUserInterfaceStyleDark) ? 1.0 : 0.0;
@@ -298,9 +271,6 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
 @interface NUVolumeTrackView : UIControl <UIGestureRecognizerDelegate>
 @property (nonatomic) float value;                        // 0…1
 @property (nonatomic, getter=isHeld) BOOL held;
-// Rest colours; nil means use the built-in ones. Set from the scrubber when it will say.
-@property (nonatomic, strong) UIColor *trackColor;
-@property (nonatomic, strong) UIColor *fillColor;
 @end
 
 @implementation NUVolumeTrackView {
@@ -356,23 +326,13 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
 // At rest the row matches the scrubber. HELD, it brightens — that is half of the swell,
 // and it was the whole of the earlier mistake: the fill was pinned at the held brightness,
 // so the row always looked like it was already being dragged.
+// The fill is a SUBVIEW of the track, so it composites over it and its own alpha is not
+// the number measured off the screen. For white over white, total = at + af(1 - at), so
+// af = (total - at) / (1 - at): dark (0.80 - 0.16)/0.84 = 0.76, light (0.48 - 0.13)/0.87 = 0.40.
 - (void)nu_applyColors {
-    UIColor *track = self.trackColor ?: NUVolumeColor(0.18);
-    UIColor *fill = self.fillColor ?: NUVolumeColor(0.62);
-    _track.backgroundColor = track;
-    _fill.backgroundColor = self.held ? NUVolumeColor(0.95) : fill;
-}
-
-- (void)setTrackColor:(UIColor *)trackColor {
-    if ([trackColor isEqual:_trackColor]) return;
-    _trackColor = trackColor;
-    [self nu_applyColors];
-}
-
-- (void)setFillColor:(UIColor *)fillColor {
-    if ([fillColor isEqual:_fillColor]) return;
-    _fillColor = fillColor;
-    [self nu_applyColors];
+    _track.backgroundColor = NUVolumeAppearanceColor(0.16, 0.13);
+    _fill.backgroundColor = self.held ? NUVolumeAppearanceColor(0.95, 0.58)
+                                      : NUVolumeAppearanceColor(0.76, 0.40);
 }
 
 - (void)setValue:(float)value {
@@ -613,15 +573,6 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-
-    // Match the song-time slider. Done here rather than at init because the scrubber has not
-    // been laid out yet when the strip is created, and colours cannot be read off a
-    // zero-sized view.
-    UIColor *trackColor = nil, *fillColor = nil;
-    if (NUVolumeCopyScrubberColors(self.superview, &trackColor, &fillColor)) {
-        self.track.trackColor = trackColor;
-        self.track.fillColor = fillColor;
-    }
 
     // The control band is the TOP kNUVolumeControlH points; the rest of the strip is the
     // platter's own bottom inset, which has to stay empty because Apple's copy of it is

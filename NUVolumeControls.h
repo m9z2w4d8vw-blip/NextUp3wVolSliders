@@ -69,11 +69,6 @@ void NUVolumeInstallHUDSuppressor(UIView *host);
 BOOL NUVolumeSystemIsWritable(void);
 float NUVolumeSystemLevel(void);
 
-// Copy the scrubber's own track and fill colours, so the volume row matches the row that
-// shows the song time instead of approximating it. Returns NO if this build's scrubber
-// doesn't expose them, in which case the row keeps its built-in colours.
-BOOL NUVolumeCopyScrubberColors(UIView *nowPlayingView,
-                                UIColor **outTrack, UIColor **outFill);
 
 #pragma mark - The row
 
