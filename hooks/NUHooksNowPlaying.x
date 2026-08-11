@@ -413,7 +413,15 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
         objc_setAssociatedObject(self, kNULayoutClampKey, @(reserved), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         // @finally: if Apple's layout throws, the flag MUST still be cleared —
         // otherwise this view permanently reports a clamped -bounds to everything.
-        @try { %orig; }
+        // Deliberately NOT `@try { %orig; }` on one line: upstream Theos's Logos
+        // truncates whatever follows the %orig substitution on that line, so the
+        // closing brace is eaten and the @finally below becomes an orphan
+        // ("@try statement without a @catch and @finally clause"). The roothide
+        // Theos fork's Logos does not have this bug, which is why the default
+        // roothide build never hit it. Keep %orig on a line of its own.
+        @try {
+            %orig;
+        }
         @finally { objc_setAssociatedObject(self, kNULayoutClampKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
     } else {
         %orig;

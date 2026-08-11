@@ -96,8 +96,22 @@
     });
 }
 
-- (void)didSelectRouteButton:(id)arg1 { BOOL wasOpen = NUCCRoutingViewOpen(self.viewIfLoaded); %orig; [self nu_routeToggled:wasOpen]; }
-- (void)toggleRoutePicker { BOOL wasOpen = NUCCRoutingViewOpen(self.viewIfLoaded); %orig; [self nu_routeToggled:wasOpen]; }
+// Both bodies are spread over several lines on purpose. Upstream Theos's Logos
+// drops everything after the %orig substitution on the same line — the
+// -nu_routeToggled: call AND the closing brace — so the next method reads as a
+// nested function definition ("function definition is not allowed here"). The
+// roothide fork's Logos does not, hence the default build never caught it.
+- (void)didSelectRouteButton:(id)arg1 {
+    BOOL wasOpen = NUCCRoutingViewOpen(self.viewIfLoaded);
+    %orig;
+    [self nu_routeToggled:wasOpen];
+}
+
+- (void)toggleRoutePicker {
+    BOOL wasOpen = NUCCRoutingViewOpen(self.viewIfLoaded);
+    %orig;
+    [self nu_routeToggled:wasOpen];
+}
 
 %end
 

@@ -31,7 +31,13 @@ jobs:
         include:
           - scheme: rootless
             flags: ROOTLESS=1
+            # Upstream Theos's Logos truncates whatever follows a %orig
+            # substitution on the same line; the hooks are written so nothing
+            # ever does. If a future Logos change breaks the build again anyway,
+            # swap in the roothide fork below — its Logos does not have that
+            # behaviour, and `rootless` is a standard scheme it still ships.
             theos: https://github.com/theos/theos
+            # theos: https://github.com/roothide/theos
           - scheme: roothide
             flags: ""
             theos: https://github.com/roothide/theos
