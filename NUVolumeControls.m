@@ -55,6 +55,13 @@ CGFloat NUVolumeHorizontalInset(void) { return kNUVolumeHInset; }
 - (void)_commitVolumeChange;
 @end
 
+// MPVolumeView's one property we touch. Declared locally for the same reason as
+// NUAVSystemController above — importing MediaPlayer just for this would link the
+// framework, and an `id` receiver can't type-check a selector nothing declares.
+@interface NUMPVolumeView : UIView
+@property (nonatomic) BOOL showsRouteButton;
+@end
+
 // The offscreen MPVolumeView the strip installs to suppress the volume HUD; reused as
 // that last-resort write path. Weak — the strip owns it.
 static __weak UIView *gNUHUDSuppressor = nil;
@@ -123,7 +130,7 @@ static BOOL NUVolumeSetViaMPVolumeSlider(float volume) {
 
 // Which of the write paths actually took the value. Logged once so a device where none of
 // them work says so plainly instead of presenting a slider that silently does nothing.
-static NSString *NUVolumeSystemSet(float volume) {
+NSString *NUVolumeApplyLocally(float volume) {
     float v = MAX(0.0f, MIN(1.0f, volume));
     NUAVSystemController *sc = NUVolumeSystemController();
     if ([sc respondsToSelector:@selector(setVolumeTo:forCategory:)]
@@ -147,6 +154,66 @@ BOOL NUVolumeSystemIsWritable(void) {
 
 float NUVolumeSystemLevel(void) { return NUVolumeSystemGet(); }
 
+// A single offscreen MPVolumeView per host, kept alive by the hierarchy. Resolved by name
+// so MediaPlayer is never linked.
+void NUVolumeInstallHUDSuppressor(UIView *host) {
+    if (!host) return;
+    Class MPV = NSClassFromString(@"MPVolumeView");
+    if (!MPV) return;
+    for (UIView *sub in host.subviews)
+        if ([sub isKindOfClass:MPV]) { gNUHUDSuppressor = sub; return; }   // already installed
+    NUMPVolumeView *suppressor =
+        (NUMPVolumeView *)[[MPV alloc] initWithFrame:CGRectMake(-4000, -4000, 1, 1)];
+    if ([suppressor respondsToSelector:@selector(setShowsRouteButton:)])
+        suppressor.showsRouteButton = NO;
+    suppressor.alpha = 0.001;   // must be in the hierarchy; must not be `hidden`
+    suppressor.userInteractionEnabled = NO;
+    [host addSubview:suppressor];
+    gNUHUDSuppressor = suppressor;
+}
+
+#pragma mark - Matching the scrubber
+
+// The scrubber is a track view with a fill view inside it, both plain background colours on
+// every build checked. Rather than approximating them, read them: "the same colour as the
+// slider that shows the song time" is then true by construction, in either appearance, and
+// stays true if Apple restyles it.
+//
+// Identified by shape, not class name: within timeControlsView, the widest short-and-wide
+// view with a real background colour is the track, and the widest such view INSIDE that is
+// the fill. Anything unexpected simply fails the checks and the row keeps its own colours.
+BOOL NUVolumeCopyScrubberColors(UIView *nowPlayingView, UIColor **outTrack, UIColor **outFill) {
+    if (![nowPlayingView respondsToSelector:@selector(timeControlsView)]) return NO;
+    UIView *time = [(MRUNowPlayingView *)nowPlayingView timeControlsView];
+    if (!time) return NO;
+
+    UIView *track = nil;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithArray:time.subviews];
+    while (queue.count) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        [queue addObjectsFromArray:v.subviews];
+        CGSize sz = v.bounds.size;
+        BOOL barShaped = sz.width > 80.0 && sz.height > 1.0 && sz.height < 24.0;
+        if (!barShaped || !v.backgroundColor) continue;
+        if (CGColorGetAlpha(v.backgroundColor.CGColor) < 0.01) continue;
+        if (!track || sz.width > track.bounds.size.width) track = v;
+    }
+    if (!track) return NO;
+
+    UIView *fill = nil;
+    for (UIView *v in track.subviews) {
+        if (!v.backgroundColor || CGColorGetAlpha(v.backgroundColor.CGColor) < 0.01) continue;
+        if (v.bounds.size.height < 1.0) continue;
+        if (!fill || v.bounds.size.width > fill.bounds.size.width) fill = v;
+    }
+    if (!fill) return NO;
+
+    if (outTrack) *outTrack = track.backgroundColor;
+    if (outFill) *outFill = fill.backgroundColor;
+    return YES;
+}
+
 #pragma mark - Our own strip
 
 // Same adaptive foreground as NUNextUpRowView: the lock-screen player follows
@@ -161,13 +228,6 @@ static UIColor *NUVolumeColor(CGFloat alpha) {
         return [UIColor colorWithWhite:w alpha:a];
     }];
 }
-
-// MPVolumeView's one property we touch. Declared locally for the same reason as
-// NUAVSystemController above — importing MediaPlayer just for this would link the
-// framework, and an `id` receiver can't type-check a selector nothing declares.
-@interface NUMPVolumeView : UIView
-@property (nonatomic) BOOL showsRouteButton;
-@end
 
 #pragma mark The track
 
@@ -191,6 +251,9 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
 @interface NUVolumeTrackView : UIControl <UIGestureRecognizerDelegate>
 @property (nonatomic) float value;                        // 0…1
 @property (nonatomic, getter=isHeld) BOOL held;
+// Rest colours; nil means use the built-in ones. Set from the scrubber when it will say.
+@property (nonatomic, strong) UIColor *trackColor;
+@property (nonatomic, strong) UIColor *fillColor;
 @end
 
 @implementation NUVolumeTrackView {
@@ -206,15 +269,14 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
     _value = 0.0f;
 
     _track = [[UIView alloc] initWithFrame:CGRectZero];
-    _track.backgroundColor = NUVolumeColor(0.18);
     _track.clipsToBounds = YES;                 // clips the fill's trailing cap
     _track.userInteractionEnabled = NO;
     [self addSubview:_track];
 
     _fill = [[UIView alloc] initWithFrame:CGRectZero];
-    _fill.backgroundColor = NUVolumeColor(0.95);
     _fill.userInteractionEnabled = NO;
     [_track addSubview:_fill];
+    [self nu_applyColors];
 
     // Driven by a gesture recognizer, NOT UIControl's own touch tracking, and this is
     // the whole reason the scrubber works where this did not.
@@ -242,6 +304,28 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
     self.accessibilityTraits = UIAccessibilityTraitAdjustable;
     self.accessibilityLabel = NULocalizedString(@"AX_VOLUME", @"Volume");
     return self;
+}
+
+// At rest the row matches the scrubber. HELD, it brightens — that is half of the swell,
+// and it was the whole of the earlier mistake: the fill was pinned at the held brightness,
+// so the row always looked like it was already being dragged.
+- (void)nu_applyColors {
+    UIColor *track = self.trackColor ?: NUVolumeColor(0.18);
+    UIColor *fill = self.fillColor ?: NUVolumeColor(0.62);
+    _track.backgroundColor = track;
+    _fill.backgroundColor = self.held ? NUVolumeColor(0.95) : fill;
+}
+
+- (void)setTrackColor:(UIColor *)trackColor {
+    if ([trackColor isEqual:_trackColor]) return;
+    _trackColor = trackColor;
+    [self nu_applyColors];
+}
+
+- (void)setFillColor:(UIColor *)fillColor {
+    if ([fillColor isEqual:_fillColor]) return;
+    _fillColor = fillColor;
+    [self nu_applyColors];
 }
 
 - (void)setValue:(float)value {
@@ -275,6 +359,7 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
 - (void)nu_setHeld:(BOOL)held {
     if (self.held == held) return;
     self.held = held;
+    [self nu_applyColors];
     [self setNeedsLayout];
     if (UIAccessibilityIsReduceMotionEnabled()) { [self layoutIfNeeded]; return; }
     [UIView animateWithDuration:kNUVolumeSwellDuration
@@ -354,6 +439,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
 @property (nonatomic, strong) NUVolumeTrackView *track;
 @property (nonatomic, assign) BOOL dragging;
 @property (nonatomic, copy) NSString *lastWritePath;
+@property (nonatomic, assign) CFAbsoluteTime lastPublish;
 @end
 
 @implementation NUVolumeStripView
@@ -384,7 +470,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
 
     // The HUD suppressor goes in FIRST: it doubles as the last-resort write path, and
     // NUVolumeSystemIsWritable consults it.
-    [self nu_installHUDSuppressor];
+    NUVolumeInstallHUDSuppressor(self);
     NULog("volume: writable=%d in %{public}@", NUVolumeSystemIsWritable(),
           NSProcessInfo.processInfo.processName);
 
@@ -412,24 +498,6 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
     return view;
 }
 
-// A volume change we make ourselves still raises SpringBoard's volume HUD, which on the
-// lock screen lands right on top of the platter. An MPVolumeView in the window is the
-// long-standing way to tell the system a slider is already on screen. Resolved by name so
-// MediaPlayer is not linked, and entirely optional — if it misbehaves on some build,
-// deleting this method only brings the HUD back.
-- (void)nu_installHUDSuppressor {
-    Class MPV = NSClassFromString(@"MPVolumeView");
-    if (!MPV) return;
-    NUMPVolumeView *suppressor =
-        (NUMPVolumeView *)[[MPV alloc] initWithFrame:CGRectMake(-4000, -4000, 1, 1)];
-    if ([suppressor respondsToSelector:@selector(setShowsRouteButton:)])
-        suppressor.showsRouteButton = NO;
-    suppressor.alpha = 0.001;   // must be in the hierarchy; must not be `hidden`
-    suppressor.userInteractionEnabled = NO;
-    [self addSubview:suppressor];
-    gNUHUDSuppressor = suppressor;
-}
-
 #pragma mark Value plumbing
 
 - (void)refreshFromSystem {
@@ -447,8 +515,17 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
 }
 
 - (void)nu_trackChanged:(NUVolumeTrackView *)track {
-    NSString *path = NUVolumeSystemSet(track.value)
-                     ?: @"NONE — no AVSystemController setter and no MPVolumeSlider";
+    // Publish for SpringBoard to apply — the local write is refused in MediaRemoteUI — and
+    // still attempt it locally, since whichever side succeeds writes the same value and a
+    // double write of one level is harmless. Throttled: value-changed fires at touch-move
+    // rate and each request costs SpringBoard an AVSystemController round trip.
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (now - self.lastPublish > 0.05) {
+        self.lastPublish = now;
+        NUVolumeRequestPublish(track.value);
+    }
+    NSString *path = NUVolumeApplyLocally(track.value)
+                     ?: @"NONE locally — relying on the SpringBoard side";
     // Throttled to a change of path, because value-changed fires on every touch-move and
     // this would otherwise be the entire log. nil is normalised above so a total failure
     // logs once rather than on every move.
@@ -466,6 +543,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
 
 - (void)nu_trackUp:(NUVolumeTrackView *)track {
     self.dragging = NO;
+    // The final value always goes, throttle or no throttle: releasing between ticks would
+    // otherwise leave the volume a few percent short of where the finger ended.
+    NUVolumeRequestPublish(track.value);
     NULog("volume strip: released at %.3f (system %.3f)", track.value, NUVolumeSystemGet());
 }
 
@@ -487,6 +567,15 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
 
 - (void)layoutSubviews {
     [super layoutSubviews];
+
+    // Match the song-time slider. Done here rather than at init because the scrubber has not
+    // been laid out yet when the strip is created, and colours cannot be read off a
+    // zero-sized view.
+    UIColor *trackColor = nil, *fillColor = nil;
+    if (NUVolumeCopyScrubberColors(self.superview, &trackColor, &fillColor)) {
+        self.track.trackColor = trackColor;
+        self.track.fillColor = fillColor;
+    }
 
     // The control band is the TOP kNUVolumeControlH points; the rest of the strip is the
     // platter's own bottom inset, which has to stay empty because Apple's copy of it is

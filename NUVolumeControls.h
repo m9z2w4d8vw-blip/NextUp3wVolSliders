@@ -51,11 +51,29 @@ CGFloat NUVolumeControlHeight(void);
 // The platter's horizontal content inset.
 CGFloat NUVolumeHorizontalInset(void);
 
+#pragma mark - Writing the volume
+
+// Apply a level in THIS process, walking the write paths in order. Returns the name of the
+// one that took it, or nil if none did. SpringBoard calls this on the far side of
+// NUVolumeRequestPublish; the row calls it too, in case the local write does work.
+NSString *NUVolumeApplyLocally(float volume);
+
+// Best-effort suppression of SpringBoard's volume HUD, which otherwise pops up over the
+// player on every drag. An MPVolumeView in a window is the long-standing way to tell the
+// system a slider is already on screen. Safe to call repeatedly.
+void NUVolumeInstallHUDSuppressor(UIView *host);
+
 #pragma mark - Backend state (for the layout diagnostics)
 
 // Can the system volume be written at all in this process, and what does it read as.
 BOOL NUVolumeSystemIsWritable(void);
 float NUVolumeSystemLevel(void);
+
+// Copy the scrubber's own track and fill colours, so the volume row matches the row that
+// shows the song time instead of approximating it. Returns NO if this build's scrubber
+// doesn't expose them, in which case the row keeps its built-in colours.
+BOOL NUVolumeCopyScrubberColors(UIView *nowPlayingView,
+                                UIColor **outTrack, UIColor **outFill);
 
 #pragma mark - The row
 

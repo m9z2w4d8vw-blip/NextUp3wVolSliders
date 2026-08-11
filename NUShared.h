@@ -140,6 +140,36 @@ static inline uint64_t NUVolumeTouchGet(void) {
     return 1;
 }
 
+// Cross-process volume WRITE request. MediaRemoteUI can read the system volume — the row
+// shows the right level and follows the hardware buttons — but its write is refused there:
+// verified on 17.0, the slider tracked the finger perfectly and the output never moved.
+// SpringBoard owns the volume (it draws the HUD) and can always write, and the tweak is
+// already injected there, so the target level is published here and applied on that side.
+//
+// The state word carries a validity bit plus the level in ten-thousandths, so 0 is a
+// legitimate value (mute) rather than indistinguishable from "nothing published".
+#define kNUSetVolumeNotify "com.yves.nextup3.setvol"
+#define kNUSetVolumeValidBit (1ULL << 32)
+#define kNUSetVolumeScale    10000.0
+
+static inline void NUVolumeRequestPublish(float volume) {
+    static int token = -1;
+    if (token == -1 && notify_register_check(kNUSetVolumeNotify, &token) != NOTIFY_STATUS_OK) { token = -1; return; }
+    float v = volume < 0.0f ? 0.0f : (volume > 1.0f ? 1.0f : volume);
+    notify_set_state(token, kNUSetVolumeValidBit | (uint64_t)(v * kNUSetVolumeScale));
+    notify_post(kNUSetVolumeNotify);
+}
+
+static inline BOOL NUVolumeRequestRead(float *outVolume) {
+    static int token = -1;
+    if (token == -1 && notify_register_check(kNUSetVolumeNotify, &token) != NOTIFY_STATUS_OK) { token = -1; return NO; }
+    uint64_t state = 0;
+    if (notify_get_state(token, &state) != NOTIFY_STATUS_OK) return NO;
+    if (!(state & kNUSetVolumeValidBit)) return NO;
+    if (outVolume) *outVolume = (float)((double)(state & 0xFFFFFFFFULL) / kNUSetVolumeScale);
+    return YES;
+}
+
 // Cross-process media-suggestions flag — iOS 18 lock screen ONLY. Every other surface
 // reads the player view's own -showSuggestionsView directly (see NUViewShowsSuggestions in
 // NUHooksShared.h); this exists because on iOS 18 the lock-screen player is a remote

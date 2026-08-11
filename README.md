@@ -177,15 +177,30 @@ drawn after, swallows every touch aimed at the slider. Hand-placing it did not m
 behave either. That whole path is gone; the gate is no longer forced, so there is exactly
 one slider and nothing overlapping the controls.
 
-What ships is `NUVolumeStripView`: speaker glyph, capsule track, speaker glyph, styled off
-the same adaptive foreground as the Up Next row, drawn into a band reserved exactly the way
-the row is (`NUVolumeGrowthForView` → `NUFitGrowthForView` → the `-bounds` clamp), directly
-above the row so the order reads like Apple's player. System volume goes through a write
-chain — `-setVolumeTo:forCategory:`, then `-setActiveCategoryVolumeTo:`, then the
-`MPVolumeSlider` inside the offscreen `MPVolumeView` that is there anyway for HUD
-suppression — and the strip subscribes to
-`AVSystemController_SystemVolumeDidChangeNotification` so it follows the hardware buttons.
-One Settings switch, `showVolumeSlider`.
+What ships is `NUVolumeStripView`: speaker glyph, capsule track, speaker glyph, drawn into a
+band reserved exactly the way the Up Next row's is (`NUVolumeGrowthForView` →
+`NUFitGrowthForView` → the `-bounds` clamp), directly above that row so the order reads like
+Apple's player. One Settings switch, `showVolumeSlider`.
+
+**Reading the volume works in MediaRemoteUI; writing it does not.** The row shows the right
+level and follows the hardware buttons, and every local write path is refused — verified on
+17.0, the slider tracked the finger perfectly and the output never moved. SpringBoard owns
+the volume, draws the HUD, and can always write, and the tweak is already injected there, so
+the row publishes a target level over a notify-state channel (`NUVolumeRequestPublish` in
+NUShared.h) and `NUHooksSpringBoard` applies it. Throttled to 50ms during a drag, with the
+final value always sent on release so letting go between ticks does not leave the level a
+few percent short. The local chain — `-setVolumeTo:forCategory:`, then
+`-setActiveCategoryVolumeTo:`, then the `MPVolumeSlider` inside the offscreen `MPVolumeView`
+that is there anyway for HUD suppression — is still attempted, since a double write of one
+level is harmless and it costs nothing to let whichever side works, work.
+
+Colours are **copied from the scrubber** rather than approximated: `NUVolumeCopyScrubberColors`
+walks `timeControlsView` for the widest bar-shaped view with a real background colour (the
+track) and the widest such view inside it (the fill), identified by shape rather than class
+name so a rename degrades to the built-in colours instead of breaking. "The same colour as
+the slider that shows the song time" is then true by construction, in either appearance. The
+fill brightens while held — that is half of the swell, and getting it wrong was what made the
+row look permanently mid-drag.
 
 Three things about the track are load-bearing, and each was a bug first:
 

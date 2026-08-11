@@ -176,6 +176,30 @@ static BOOL NUShouldBlockApertureSwipe(void) {
         // every respring and can read the prefs domain, so it republishes the token here;
         // being system-global, that one seed restores the state for every reader process.
         NUPrefsPublishState();
+
+        // Apply volume changes on behalf of the lock-screen row. MediaRemoteUI can read the
+        // system volume but its write is refused there, and SpringBoard — which owns the
+        // volume and draws the HUD — can always write. The row publishes a target level;
+        // this applies it. Registered unconditionally: the preference is checked by the row
+        // before it ever publishes, and a handler that only exists when the pref was on at
+        // respring time would silently stop working after the switch is flipped.
+        static int volToken;
+        notify_register_dispatch(kNUSetVolumeNotify, &volToken, dispatch_get_main_queue(), ^(int t) {
+            float target = 0.0f;
+            if (!NUVolumeRequestRead(&target)) return;
+            // Suppress our own HUD before writing, not after: an MPVolumeView already in a
+            // window is what tells the system a slider is on screen, and the check happens
+            // as the volume changes.
+            NUVolumeInstallHUDSuppressor(UIApplication.sharedApplication.windows.firstObject);
+            NSString *path = NUVolumeApplyLocally(target);
+            static NSString *lastPath = nil;
+            if (![path isEqualToString:lastPath]) {
+                lastPath = path;
+                NULog("volume: SpringBoard applied %.3f via %{public}@", target,
+                      path ?: @"NOTHING — no write path in SpringBoard either");
+            }
+        });
+
         %init(SpringBoard);
     }
 }
