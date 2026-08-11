@@ -44,7 +44,7 @@ NextUp3_FILES = \
 	hooks/NUHooksLockScreen14.x \
 	hooks/NUHooksLockScreen18.x \
 	hooks/NUHooksTCC.x \
-	NUHooksShared.m NULogFile.m NUProviderBase.m NUMusicProvider.m NUPodcastProvider.m NUYouTubeMusicProvider.m NUSpotifyProvider.m NUNextUpManager.m NUNextUpRowView.m NUPrefs.m
+	NUHooksShared.m NULogFile.m NUProviderBase.m NUMusicProvider.m NUPodcastProvider.m NUYouTubeMusicProvider.m NUSpotifyProvider.m NUNextUpManager.m NUNextUpRowView.m NUVolumeControls.m NUPrefs.m
 # LIGHTMESSAGING_TIMEOUT (ms) bounds the sync mach round-trip in
 # LMConnectionSendTwoWay. Without it the display's main-thread query blocks
 # forever against a suspended app, whose runloop never services the port, and

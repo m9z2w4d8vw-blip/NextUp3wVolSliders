@@ -10,3 +10,4 @@
 "AX_ANNOUNCE_SKIPPED" = "Skipped";
 "AX_ANNOUNCE_PREVIOUS_QUEUED" = "Previous track queued";
 "MUSIC_USAGE_DESCRIPTION" = "NextUp 3 manages the Apple Music Up Next queue.";
+"AX_VOLUME" = "Volume";

@@ -17,6 +17,7 @@
 #import "NUPrefs.h"
 #import "NUNextUpManager.h"
 #import "NUNextUpRowView.h"
+#import "NUVolumeControls.h"
 
 #pragma mark - Process / version
 
@@ -64,11 +65,15 @@ extern UIView * __weak gLSMediaPlatter;
 // Associated-object keys (unique addresses; shared across files).
 extern void * const kNUHostViewKey;    // host kind stamped on the now-playing view
 extern void * const kNULayoutClampKey; // report the compact height during our layout pass
+                                       // (MRUNowPlayingView stores the reserved AMOUNT —
+                                       //  row + volume strip; the Dynamic Island views
+                                       //  store a plain flag and read it as one)
 extern void * const kNUDIRowShownKey;  // last row-shown state on a DI VC
 extern void * const kNUCCExpandedKey;  // Control Center card is in expanded content mode
 extern void * const kNUShowStateKey;   // last row-shown state on the now-playing view
 extern void * const kNURouteOpeningKey; // iOS 18 CC route picker opening (force-hide row)
 extern void * const kNURouteClosingKey; // iOS 18 CC route picker closing (force-show row)
+extern void * const kNUVolumeFallbackKey; // Apple's native volume row never materialised here
 
 #pragma mark - Now-playing host detection
 
@@ -391,6 +396,42 @@ static inline CGFloat NURowHeightForView(UIView *view) {
     return (h == NUHostControlCenter || h == NUHostDynamicIsland)
         ? [NUNextUpRowView preferredHeightForControlCenter]
         : [NUNextUpRowView preferredHeight];
+}
+
+#pragma mark - Lock-screen volume row
+
+// The volume row is deliberately INDEPENDENT of the Up Next row: it has its own
+// Settings switch, so it must not consult NUNextUpManager.active (there is a volume to
+// control whether or not a next track exists) nor the "showLockScreen" toggle (which
+// governs where the Up Next row appears). The one gate it shares is Apple's own
+// suggestions state — with the transport replaced by suggestion tiles there is no
+// player to hang a slider under.
+static inline BOOL NUViewShowsVolume(UIView *view) {
+    if (!NUVolumeFeatureEnabled()) return NO;
+    if (NUViewHostKind(view) != NUHostLockScreen) return NO;
+    if (NUViewShowsSuggestions(view)) return NO;
+    return YES;
+}
+
+// Are we drawing the slider ourselves for this view? Either the user asked for it, or
+// Apple's own row refused to materialise here (stamped by the layout hook).
+static inline BOOL NUViewUsesCustomVolume(UIView *view) {
+    return NUVolumeCustomPreferred()
+        || [objc_getAssociatedObject(view, kNUVolumeFallbackKey) boolValue];
+}
+
+// Height OUR strip adds to the platter. Apple's native row is inside Apple's own
+// -sizeThatFits:, so in native mode this is 0 and the platter grows on its own.
+static inline CGFloat NUVolumeGrowthForView(UIView *view) {
+    return (NUViewShowsVolume(view) && NUViewUsesCustomVolume(view)) ? NUVolumeStripHeight() : 0.0;
+}
+
+// Everything we add on top of Apple's fitting size, lock screen only. Both terms are
+// self-gating, so this is the single lever -sizeThatFits: and the -bounds clamp share:
+// whatever we reserve here is exactly what we hide from Apple's own layout pass.
+static inline CGFloat NUFitGrowthForView(UIView *view) {
+    CGFloat growth = NUViewGrowsFit(view) ? NURowHeightForView(view) : 0.0;
+    return growth + NUVolumeGrowthForView(view);
 }
 
 // Place the row inside a Control Center now-playing card, after Apple's own layout

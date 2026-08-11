@@ -26,6 +26,9 @@ artwork, so you always know what's coming and can act on it before it plays.
 - **Skip ahead** — remove the upcoming track from the queue with one tap, or tap
   its artwork to play it right now.
 - **Bring back the previous track** — re-queue what just played as the next track.
+- **Volume slider on the Lock Screen** *(opt-in, iOS 16/17)* — Apple lays its own
+  volume row out in Control Center but only shows it on the Lock Screen while the
+  session is on AirPlay. Switch this on and it appears for local playback too.
 - **Swipe gestures** — swipe the row for an interactive carousel: ← skips the
   next track, → puts the track you just heard back into the queue as up next,
   with neighbour artwork sliding in as you drag.
@@ -88,6 +91,9 @@ tweak wrote (settings and play history).
 
 ## Known issues
 
+- The Lock Screen volume slider is **not yet verified on-device**, and it is off by
+  default for that reason. See "Lock-screen volume row" below for what to expect and
+  what to send back if it doesn't show up.
 - Apple Podcasts is not yet verified on iOS 26 (every other app and surface is).
 - Spotify and YouTube Music integrations are built against specific app versions
   (see table above); an app update can silently break them until the tweak is
@@ -129,6 +135,7 @@ instant.
 | `NUHooksShared.{h,m}` | Cross-hook helpers (process gates, view lookup, CC row layout) |
 | `NUShared.h` | IPC service names, Darwin notification names, `NUApplySandbox()` |
 | `NUPrefs.{h,m}` | Prefs: live state on a notify-state token, CFPreferences as persisted fallback |
+| `NUVolumeControls.{h,m}` | Lock-screen volume row: runtime discovery of MediaRemoteUI's volume-availability gates, `NUVolumeStripView` (our own slider, AVSystemController-backed), and the DEBUG probe |
 | `NUPrivate.h` | Private-API interface declarations (class-dump + Frida-verified) |
 | `NULocalization.h` / `NULogFile.m` | String lookup; DEBUG-only file log sink |
 | `prefs/` | PreferenceLoader settings pane + 27 localizations |
@@ -156,6 +163,48 @@ make package DEBUG=1                     # dev build with NULog logging
 # MediaRemoteUI. SpringBoard hosts hooks too, so finish with a respring:
 killall SpringBoard
 ```
+
+## Lock-screen volume row
+
+`MRUNowPlayingView` has a `volumeControlsView` and lays it out in Control Center on
+every version we support. On the lock screen it only appears while MediaRemote thinks
+the session's volume is controllable — i.e. on AirPlay — so local playback gets no
+slider. Two ways back in, and `NUVolumeControls.m` implements both because which one
+works is an on-device question:
+
+- **Native** (default): the availability gate isn't the same selector on every build,
+  so `NUVolumeForceNativeGates()` *discovers* it — it walks the classes in
+  MediaRemoteUI's image, finds every zero-argument `BOOL` getter whose selector
+  mentions volume, classifies it (`…Available` / `…SupportsVolume…` / `shouldShow…`
+  → force YES; `…Hidden` / `…Disabled` → force NO; anything that reads like live
+  interaction state — `isDragging`, `isTracking`, `…Muted` — is left alone) and
+  swizzles it through `imp_implementationWithBlock`. Each replacement re-reads the
+  preference, so the Settings switch applies live and a disabled tweak calls through
+  to `%orig`. Apple then builds, wires and measures its own row, which means the
+  platter grows through Apple's own `-sizeThatFits:` and the existing height plumbing
+  carries it across the process boundary for free.
+- **Custom** (`Use NextUp's Own Slider`, or automatic after the native row stays
+  unlaid-out for three layout passes): `NUVolumeStripView` — speaker glyph, slider,
+  speaker glyph, styled off the same adaptive foreground as the Up Next row — drawn
+  into a strip reserved exactly the way the row is (`NUVolumeGrowthForView` →
+  `NUFitGrowthForView` → the `-bounds` clamp), directly above the row so the order
+  reads like Apple's player. System volume goes through `AVSystemController`
+  (`getVolume:forCategory:` / `setVolumeTo:forCategory:`, category `Audio`), and the
+  strip subscribes to `AVSystemController_SystemVolumeDidChangeNotification` so it
+  follows the hardware buttons. A throwaway `MPVolumeView` sits offscreen inside the
+  strip purely to suppress SpringBoard's volume HUD.
+
+Scope is **the lock screen on iOS 16 and 17** — the versions whose lock-screen player
+is the `MRUNowPlayingView` that Control Center shares. iOS 14/15 host it in-process
+behind `CSMediaControlsViewController` (different height levers, see
+`NUHooksLockScreen14/15`) and iOS 18 replaced it with `MRULockscreenView`, so the
+Settings rows hide themselves there rather than offering a dead toggle. Control Center
+and the Dynamic Island already have Apple's slider and are untouched.
+
+If the row doesn't turn up, build with `make package DEBUG=1` and unlock with music
+playing: `NUVolumeProbeOnce` dumps every volume-shaped selector MediaRemoteUI declares,
+its return encoding, its live answer on the player, and how the classifier scored it —
+which is enough to name the real gate instead of guessing at it.
 
 ## Adding support for another app
 

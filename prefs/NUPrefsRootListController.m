@@ -172,6 +172,17 @@ static BOOL NUDeviceHasDynamicIsland(void) {
     return hasIsland;
 }
 
+// The lock-screen volume row only has an implementation on iOS 16 and 17 — the versions
+// whose lock-screen player is the MRUNowPlayingView that Control Center shares. iOS 14/15
+// host that player in-process behind CSMediaControlsViewController and iOS 18 replaced it
+// with MRULockscreenView, so on those the switches would be dead controls. Hide them
+// rather than ship a toggle that does nothing. (Keep in step with NUVolumeOSSupported()
+// in NUVolumeControls.m — the two answer the same question on either side of the deb.)
+static BOOL NUVolumeRowSupported(void) {
+    NSInteger major = NSProcessInfo.processInfo.operatingSystemVersion.majorVersion;
+    return major >= 16 && major <= 17;
+}
+
 // Fetch an app's icon and mask it to the classic Settings app-icon look (~29pt squircle).
 // Returns nil if the artwork can't be produced, in which case the row just stays text-only.
 static UIImage *NUAppIconImage(NSString *bundleID) {
@@ -217,6 +228,9 @@ static UIImage *NUAppIconImage(NSString *bundleID) {
             NSString *key = [spec propertyForKey:@"key"];
             if ([key isEqualToString:@"showDynamicIsland"] && !NUDeviceHasDynamicIsland())
                 continue;                                          // no island → no toggle
+            if (([key isEqualToString:@"showVolumeSlider"] || [key isEqualToString:@"volumeSliderCustom"])
+                && !NUVolumeRowSupported())
+                continue;                                          // unimplemented on this iOS
             NSString *bundleID = NUBundleIDForKey(key);
             if (bundleID && !NUAppInstalled(bundleID)) continue;   // app not on device → drop it
             UIImage *icon = NUAppIconImage(bundleID);

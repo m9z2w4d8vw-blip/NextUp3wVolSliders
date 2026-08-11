@@ -7,8 +7,80 @@
 // What we last pushed into Apple's layout for this VC: the show-state and the width
 // it was measured at. Used to skip the forced relayout entirely when the platter
 // already reflects reality — see -nu_syncPlatterHeight.
+//
+// The show-state is a bitmask, not a bool, because two independent things now change
+// the platter's height: bit 0 the Up Next row, bit 1 the lock-screen volume row, bit 2
+// whether that volume row is OURS (Apple's own row grows the platter through Apple's
+// -sizeThatFits:, ours through the strip we reserve — so switching between them
+// changes the measurement even though the row is showing either way).
+#define NU_STATE_ROW    1
+#define NU_STATE_VOLUME 2
+#define NU_STATE_VOLUME_CUSTOM 4
 static void * const kNUPushedShowKey  = (void *)&kNUPushedShowKey;
 static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
+
+// The now-playing VC that owns a player view.
+static MRUNowPlayingViewController *NUOwningNowPlayingVC(UIView *view) {
+    Class NPVC = objc_getClass("MRUNowPlayingViewController");
+    UIResponder *r = view.nextResponder;
+    while (r && ![r isKindOfClass:NPVC]) r = r.nextResponder;
+    return (MRUNowPlayingViewController *)r;
+}
+
+// The packed show-state for a player view (see the bit definitions above).
+static NSInteger NUPlayerShowState(UIView *npView, BOOL row) {
+    BOOL volume = NUViewShowsVolume(npView);
+    NSInteger state = row ? NU_STATE_ROW : 0;
+    if (volume) {
+        state |= NU_STATE_VOLUME;
+        if (NUViewUsesCustomVolume(npView)) state |= NU_STATE_VOLUME_CUSTOM;
+    }
+    return state;
+}
+
+// Place the lock-screen volume row. Two paths, decided per view:
+//
+//   native — Apple's own row, revealed by the forced availability gates. It is inside
+//            Apple's -sizeThatFits:, so there is nothing for us to reserve or lay out;
+//            the platter grows through the existing height plumbing.
+//   custom — NUVolumeStripView, drawn into the strip NUVolumeGrowthForView reserved,
+//            directly ABOVE the Up Next row so the order reads like Apple's own player
+//            (transport → volume) with our row last.
+//
+// Every relayout request is deferred: asking for another pass from inside
+// -layoutSubviews would recurse. The native→custom decision is bounded by
+// NUVolumeNoteNativeMiss, so this settles within a few passes either way.
+static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
+    NUVolumeStripView *strip = nil;
+    for (UIView *sub in npView.subviews)
+        if ([sub isKindOfClass:[NUVolumeStripView class]]) { strip = (NUVolumeStripView *)sub; break; }
+
+    if (!showVol) { strip.hidden = YES; return; }
+
+    if (!NUViewUsesCustomVolume(npView)) {
+        strip.hidden = YES;
+        if (NUVolumeRevealNative(npView)) { NUVolumeClearNativeMiss(npView); return; }
+        BOOL flipped = NUVolumeNoteNativeMiss(npView);
+        MRUNowPlayingViewController *vc = flipped ? NUOwningNowPlayingVC(npView) : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [npView setNeedsLayout];
+            [vc nu_syncPlatterHeight];   // nil-safe: no-op until the decision flips
+        });
+        return;
+    }
+
+    if (!strip) {
+        strip = [[NUVolumeStripView alloc] initWithFrame:CGRectZero];
+        [npView addSubview:strip];
+        NULog("volume: own strip attached to %{public}@", NSStringFromClass(npView.class));
+    }
+    strip.hidden = NO;
+    [npView bringSubviewToFront:strip];
+    CGFloat volH = NUVolumeStripHeight();
+    CGRect b = npView.bounds;   // clamp cleared → the real, grown height
+    strip.frame = CGRectMake(0, b.size.height - rowH - volH, b.size.width, volH);
+    [strip refreshFromSystem];
+}
 
 %group NUNowPlaying
 %hook MRUNowPlayingViewController
@@ -18,6 +90,12 @@ static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
 - (void)viewDidLoad {
     %orig;
     [[NUNextUpManager sharedManager] start];
+    // Discover and force MediaRemoteUI's volume-availability gates now: they have to be
+    // in place before Apple's first layout pass measures the player, and this is the
+    // earliest point at which the framework's classes are certain to be loaded (a %ctor
+    // is too early). Idempotent, and each forced gate re-reads the preference, so the
+    // Settings switch still applies live.
+    NUVolumeForceNativeGates();
     [self nu_ensureRow];
 }
 
@@ -149,13 +227,14 @@ static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
     // mediaserverd killed on the 14.2 test device, which stops playback.
     // Row content changes need none of this: the row's height is constant, so only a
     // show/hide flip (or a width change) can change the platter's size.
+    NSInteger state = NUPlayerShowState(self.view, show);
     NSNumber *pushedShow = objc_getAssociatedObject(self, kNUPushedShowKey);
     CGFloat curW = self.view.bounds.size.width;
     CGFloat pushedW = [objc_getAssociatedObject(self, kNUPushedWidthKey) doubleValue];
-    BOOL needSync = (pushedShow == nil) ? show
-                                        : (pushedShow.boolValue != show || fabs(pushedW - curW) > 0.5);
+    BOOL needSync = (pushedShow == nil) ? (state != 0)
+                                        : (pushedShow.integerValue != state || fabs(pushedW - curW) > 0.5);
     if (!needSync) return;
-    objc_setAssociatedObject(self, kNUPushedShowKey, @(show), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(self, kNUPushedShowKey, @(state), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(self, kNUPushedWidthKey, @(curW), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     // Control Center sizes the card via -preferredExpandedContentHeight (hooked on
@@ -268,24 +347,29 @@ static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
 
 %hook MRUNowPlayingView
 
-// Grow the reported size so the platter becomes taller by our row height. This
-// is the reliable growth lever (independent of the layout clamp below).
+// Grow the reported size so the platter becomes taller by whatever we add — the Up
+// Next row, our own volume strip, or both. This is the reliable growth lever
+// (independent of the layout clamp below). Apple's native volume row is not counted
+// here: it is already inside %orig's own measurement.
 - (CGSize)sizeThatFits:(CGSize)size {
     CGSize r = %orig;
-    if (NUViewGrowsFit(self)) r.height += NURowHeightForView(self);
+    r.height += NUFitGrowthForView(self);
     return r;
 }
 
-// During our own layout pass, report the COMPACT height (real minus our row) so
-// %orig lays the player's controls out exactly as it would without us — original
-// spacing, top-anchored — instead of stretching the top gap and bottom-anchoring
-// the transport onto our strip. sizeThatFits (above) does NOT set the flag, so
-// the platter still measures at the full grown height.
+// During our own layout pass, report the COMPACT height (real minus everything we
+// reserved) so %orig lays the player's controls out exactly as it would without us —
+// original spacing, top-anchored — instead of stretching the top gap and
+// bottom-anchoring the transport onto our strip. sizeThatFits (above) does NOT set the
+// flag, so the platter still measures at the full grown height.
+//
+// The clamp carries the AMOUNT rather than a flag: the reserved height is now the sum
+// of the Up Next row and (in custom mode) the volume strip, and either can be present
+// without the other.
 - (CGRect)bounds {
     CGRect b = %orig;
-    if (objc_getAssociatedObject(self, kNULayoutClampKey)) {
-        b.size.height -= NURowHeightForView(self);
-    }
+    NSNumber *clamp = objc_getAssociatedObject(self, kNULayoutClampKey);
+    if (clamp) b.size.height -= clamp.doubleValue;
     return b;
 }
 
@@ -298,7 +382,13 @@ static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
         for (UIView *a = self; a; a = a.superview)
             if (PL && [a isKindOfClass:PL]) { gLSMediaPlatter = a; break; }
     }
+    // Belt and braces for the volume gates: -viewDidLoad already installed them, but a
+    // player view that was created before this process loaded the tweak reaches layout
+    // without ever having passed through it. dispatch_once inside, so this is free.
+    NUVolumeForceNativeGates();
+
     BOOL show = NUViewShowsRow(self);
+    BOOL showVol = NUViewShowsVolume(self);
 
     // Keep the platter height locked to the row's visibility. The row hides/shows
     // here on every layout (immediately reflecting `active` / the Apple-Music source
@@ -306,18 +396,21 @@ static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
     // so a source/track change could leave the two out of sync for a beat (grown
     // platter with no row, or a row on a compact platter). Whenever the show-state
     // flips, re-sync the height in the next tick (deferred to avoid recursing inside
-    // this layout pass) so height always follows the row.
+    // this layout pass) so height always follows the row. The volume row rides the
+    // same signal, hence the packed state rather than the row's bool alone.
+    NSInteger showState = NUPlayerShowState(self, show);
     NSNumber *lastShow = objc_getAssociatedObject(self, kNUShowStateKey);
-    if (!lastShow || lastShow.boolValue != show) {
-        objc_setAssociatedObject(self, kNUShowStateKey, @(show), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        UIResponder *r = self.nextResponder;
-        while (r && ![r isKindOfClass:objc_getClass("MRUNowPlayingViewController")]) r = r.nextResponder;
-        MRUNowPlayingViewController *npVC = (MRUNowPlayingViewController *)r;
+    if (!lastShow || lastShow.integerValue != showState) {
+        objc_setAssociatedObject(self, kNUShowStateKey, @(showState), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        MRUNowPlayingViewController *npVC = NUOwningNowPlayingVC(self);
         if (npVC) dispatch_async(dispatch_get_main_queue(), ^{ [npVC nu_syncPlatterHeight]; });
     }
 
-    if (show) {
-        objc_setAssociatedObject(self, kNULayoutClampKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Everything we reserve is hidden from Apple's own layout pass, so the player lays
+    // its controls out at the compact height and we own the strip underneath.
+    CGFloat reserved = (show ? NURowHeightForView(self) : 0.0) + NUVolumeGrowthForView(self);
+    if (reserved > 0.5) {
+        objc_setAssociatedObject(self, kNULayoutClampKey, @(reserved), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         // @finally: if Apple's layout throws, the flag MUST still be cleared —
         // otherwise this view permanently reports a clamped -bounds to everything.
         @try { %orig; }
@@ -325,6 +418,10 @@ static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
     } else {
         %orig;
     }
+
+    // After %orig, so the probe reads the frames Apple actually gave its own row.
+    if (showVol) NUVolumeProbeOnce(self);
+    NULayoutVolumeRow(self, showVol, show ? NURowHeightForView(self) : 0.0);
 
     NUNextUpRowView *row = nil;
     for (UIView *sub in self.subviews) {

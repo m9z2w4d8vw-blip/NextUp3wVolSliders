@@ -9,3 +9,7 @@
 "Lock Screen" = "Lock Screen";
 "Dynamic Island" = "Dynamic Island";
 "Control Center" = "Control Center";
+"Volume" = "Volume";
+"Adds the volume slider to the Lock Screen player, the one Control Center already has. Apple only lays it out there while the session is on AirPlay; this unhides it for local playback too. If it stays missing, switch on the tweak's own slider below." = "Adds the volume slider to the Lock Screen player, the one Control Center already has. Apple only lays it out there while the session is on AirPlay; this unhides it for local playback too. If it stays missing, switch on the tweak's own slider below.";
+"Volume Slider" = "Volume Slider";
+"Use NextUp's Own Slider" = "Use NextUp's Own Slider";

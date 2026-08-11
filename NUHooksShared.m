@@ -12,3 +12,4 @@ void * const kNUCCExpandedKey  = (void *)&kNUCCExpandedKey;
 void * const kNUShowStateKey   = (void *)&kNUShowStateKey;
 void * const kNURouteOpeningKey = (void *)&kNURouteOpeningKey;
 void * const kNURouteClosingKey = (void *)&kNURouteClosingKey;
+void * const kNUVolumeFallbackKey = (void *)&kNUVolumeFallbackKey;

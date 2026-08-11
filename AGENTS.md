@@ -54,6 +54,7 @@ fallback. Canonical explanation at the top of `NUPrefs.h`.
 | `NUShared.h` | Service names, notification names, snapshot dictionary keys, `NUApplySandbox()`, `NUDITouchSet/Get` |
 | `NUPrivate.h` | Private-API @interface declarations (class-dump + Frida-verified) |
 | `NUPrefs.{h,m}` | Pref keys, state-bit layout, `NUPrefBool` / `NUMasterEnabled` (`NUInterfaceEnabled` lives in NUHooksShared.h) |
+| `NUVolumeControls.{h,m}` | Lock-screen volume row (iOS 16/17, opt-in). Runtime discovery + swizzling of MediaRemoteUI's volume-availability gates; `NUVolumeStripView` as the fallback slider; DEBUG-only gate probe. Predicates (`NUViewShowsVolume`, `NUVolumeGrowthForView`, `NUFitGrowthForView`) live in NUHooksShared.h |
 | `prefs/` | PreferenceLoader pane; `Root.strings` keys must byte-exactly match `Root.plist` values. The controller filters `Root.plist` at runtime — rows for apps that aren't installed, and the Dynamic Island row without an island (MobileGestalt `ArtworkTraits` → subtype, then the panel's exclusion area), are dropped |
 
 ## Conventions
