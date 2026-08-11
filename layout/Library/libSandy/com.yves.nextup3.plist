@@ -21,6 +21,21 @@
 	</array>
 	<key>Extensions</key>
 	<array>
+		<!-- DEBUG log directory. Without this every sandboxed process (the media apps,
+		     and MediaRemoteUI, which draws the lock-screen player) falls back to its own
+		     container's tmp, where Preferences cannot read it — so the one log that
+		     matters for the lock-screen UI was unreachable. Read-write on a single
+		     directory we own. If a libSandy build rejects the `file` extension type the
+		     whole profile fails, which the ctor logs as a non-zero applyProfile result:
+		     visible, and reversible by deleting these two dicts. -->
+		<dict>
+			<key>type</key>
+			<string>file</string>
+			<key>extension_class</key>
+			<string>com.apple.app-sandbox.read-write</string>
+			<key>path</key>
+			<string>/var/mobile/nu</string>
+		</dict>
 		<dict>
 			<key>type</key>
 			<string>mach</string>

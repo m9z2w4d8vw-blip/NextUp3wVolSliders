@@ -428,10 +428,17 @@ static inline BOOL NUViewUsesCustomVolume(UIView *view) {
         || [objc_getAssociatedObject(view, kNUVolumeFallbackKey) boolValue];
 }
 
-// Height OUR strip adds to the platter. Apple's native row is inside Apple's own
-// -sizeThatFits:, so in native mode this is 0 and the platter grows on its own.
+// Height the volume row adds to the platter, in BOTH modes.
+//
+// This used to be custom-mode only, on the assumption that Apple's own -sizeThatFits:
+// budgets for its volume row once the availability gate is forced. On the iOS 17 lock
+// screen it does not: measured on-device, the platter grew by the Up Next row's height
+// alone and Apple laid its volume view out at exactly the transport row's y — both
+// visible, overlapping, with the transport on top eating every touch aimed at the
+// slider. The lock-screen layout simply has no slot for that row; forcing the gate
+// makes it appear without making room for it. So we reserve the band either way.
 static inline CGFloat NUVolumeGrowthForView(UIView *view) {
-    return (NUViewShowsVolume(view) && NUViewUsesCustomVolume(view)) ? NUVolumeStripHeight() : 0.0;
+    return NUViewShowsVolume(view) ? NUVolumeStripHeight() : 0.0;
 }
 
 // Everything we add on top of Apple's fitting size, lock screen only. Both terms are

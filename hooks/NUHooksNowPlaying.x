@@ -79,11 +79,32 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
 
     if (!showVol) { strip.hidden = YES; return; }
 
+    // The band we reserved through -sizeThatFits: (NUVolumeGrowthForView) and hid from
+    // Apple's layout pass through the -bounds clamp. It sits between Apple's content and
+    // the Up Next row, which is Apple's own ordering: transport, then volume, then ours.
+    CGFloat volH = NUVolumeStripHeight();
+    CGFloat controlH = NUVolumeControlHeight();
+    CGRect b = npView.bounds;                       // clamp cleared → the real, grown height
+    CGFloat bandTop = b.size.height - rowH - volH;
+
     if (!NUViewUsesCustomVolume(npView)) {
         strip.hidden = YES;
         if (NUVolumeRevealNative(npView)) {
             NUVolumeClearNativeMiss(npView);
-            NULogVolumeLayout(npView, NO, 0.0, nil);
+            // Apple laid this out at the transport row's own y, because the lock-screen
+            // layout has no slot for it — so move it into the band. Keep Apple's x and
+            // width (its insets are already right) and take over y only, then bring it
+            // to the front so nothing drawn above can intercept the drag.
+            UIView *native = NUVolumeNativeView(npView);
+            CGFloat h = native.bounds.size.height > 1.0 ? native.bounds.size.height : controlH;
+            CGFloat targetY = bandTop + (controlH - h) / 2.0;
+            if (fabs(native.frame.origin.y - targetY) > 0.5) {
+                CGRect f = native.frame;
+                f.origin.y = targetY;
+                native.frame = f;
+            }
+            [npView bringSubviewToFront:native];
+            NULogVolumeLayout(npView, NO, rowH + volH, nil);
             return;
         }
         BOOL flipped = NUVolumeNoteNativeMiss(npView);
@@ -102,9 +123,7 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
     }
     strip.hidden = NO;
     [npView bringSubviewToFront:strip];
-    CGFloat volH = NUVolumeStripHeight();
-    CGRect b = npView.bounds;   // clamp cleared → the real, grown height
-    strip.frame = CGRectMake(0, b.size.height - rowH - volH, b.size.width, volH);
+    strip.frame = CGRectMake(0, bandTop, b.size.width, volH);
     [strip refreshFromSystem];
     NULogVolumeLayout(npView, YES, rowH + volH, strip);
 }

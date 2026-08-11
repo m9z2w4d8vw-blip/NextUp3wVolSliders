@@ -38,6 +38,7 @@ BOOL NUVolumeCustomPreferred(void) {
 }
 
 CGFloat NUVolumeStripHeight(void) { return kNUVolumeStripHeight; }
+CGFloat NUVolumeControlHeight(void) { return kNUVolumeControlH; }
 
 #pragma mark - System volume (AVSystemController)
 

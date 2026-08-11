@@ -38,9 +38,16 @@ BOOL NUVolumeFeatureEnabled(void);
 // "volumeSliderCustom": draw our own strip instead of unhiding Apple's.
 BOOL NUVolumeCustomPreferred(void);
 
-// Height OUR strip reserves in the platter. Apple's native row is inside Apple's own
-// fitting size and contributes nothing here.
+// Height the volume row reserves in the platter — for OUR strip and for Apple's own
+// row alike, because Apple's lock-screen layout turns out not to budget for it (see
+// NULayoutVolumeRow): with the gate forced it lays the view out at the transport's own
+// y, so the two collide and the transport, drawn after, swallows the touches. We
+// therefore reserve the band ourselves in both modes and place the row into it.
 CGFloat NUVolumeStripHeight(void);
+
+// The control's own height within that band; the remainder is the platter's bottom
+// inset, which has to stay empty. Used to centre either slider in the band.
+CGFloat NUVolumeControlHeight(void);
 
 #pragma mark - Native row
 

@@ -10,6 +10,8 @@ case "$1" in
     find /var/mobile/Containers/Data/Application \
       -maxdepth 4 -type d -path "*/Library/Application Support/NextUp3" \
       -exec rm -rf {} + 2>/dev/null
+    # DEBUG log directory created by postinst (see the libSandy file extension)
+    rm -rf /var/mobile/nu
     killall Music Podcasts YouTubeMusic Spotify MediaRemoteUI 2>/dev/null || true
     ;;
 esac

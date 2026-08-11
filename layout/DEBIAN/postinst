@@ -2,5 +2,13 @@
 # Restart the injected media processes so the new dylib loads on next launch.
 # SpringBoard is left to the package manager's respring prompt (it hosts the
 # lock-screen / Dynamic Island hooks; MediaRemoteUI relaunches on demand).
+# The libSandy profile grants read-write on /var/mobile/nu (the DEBUG log directory).
+# A sandbox extension cannot conjure a missing directory, and a sandboxed process is not
+# allowed to create it either, so create it here — owned by mobile, which is what every
+# injected process runs as. Harmless on a release build, which never writes a log.
+mkdir -p /var/mobile/nu 2>/dev/null || true
+chown mobile:mobile /var/mobile/nu 2>/dev/null || true
+chmod 755 /var/mobile/nu 2>/dev/null || true
+
 killall Music Podcasts YouTubeMusic Spotify MediaRemoteUI 2>/dev/null || true
 exit 0

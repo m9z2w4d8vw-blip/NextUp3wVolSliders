@@ -212,10 +212,24 @@ accepts a plain disagreement between Apple's current fit and the last published
 `preferredContentSize`; `-sizeThatFits:` alone is cheap, and the expensive forced
 relayout still only runs on a real difference.
 
+Measured on-device afterwards, and the assumption above was still too generous: Apple's
+lock-screen `-sizeThatFits:` does not budget for the volume row *at all*, gate forced or
+not. The platter grew by the Up Next row's height alone and the volume view was laid out
+at exactly the transport row's y — both visible, overlapping, with the transport drawn
+after and therefore swallowing every touch aimed at the slider. The lock-screen layout
+simply has no slot for that row; forcing the gate makes it appear without making room.
+
+So `NUVolumeGrowthForView` now reserves the band in **both** modes, the `-bounds` clamp
+hides it from Apple's layout pass as it already did for the row, and `NULayoutVolumeRow`
+takes over the native view's `y` — keeping Apple's x and width, whose insets are already
+right — and brings it to the front so nothing above it can intercept the drag.
+
 Settings › Diagnostics has **Export Debug Log**, which collects
 `/var/mobile/nu/nextup3-*.log` plus the device/OS/preference state into one text file
-and opens the share sheet. Only the display-side processes write there; the media apps
-are container-redirected and their logs are reachable only through Filza.
+and opens the share sheet. The libSandy profile grants read-write on `/var/mobile/nu`
+(and the postinst creates it) so the sandboxed processes — the media apps, and
+MediaRemoteUI, which draws the lock-screen player — land their logs there too instead of
+in a container tmp nothing else can read.
 
 If the row doesn't turn up, build with `make package DEBUG=1` and unlock with music
 playing: `NUVolumeProbeOnce` dumps every volume-shaped selector MediaRemoteUI declares,
