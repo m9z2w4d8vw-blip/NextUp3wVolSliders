@@ -1,15 +1,20 @@
-# Builds NextUp 3 debs on a Linux runner — no Mac needed. Debs land under
-# Actions → this run → Artifacts.
+# Builds NextUp 3 debs on a Linux runner — no Mac needed. Every successful run
+# attaches its debs to a GitHub Release as well as to the run's Artifacts.
 #
 # Two variants, matching the two bootstraps:
-#   rootless — vanilla Theos, package scheme `rootless`, iphoneos-arm64
-#   roothide — the roothide Theos FORK (the `roothide` scheme only exists there),
-#              iphoneos-arm64e. Marked experimental: a failure here still leaves
-#              the rootless artifact uploaded.
+#   rootless — vanilla Theos, scheme `rootless`, deb tagged iphoneos-arm64
+#              (this is the one for Dopamine)
+#   roothide — the roothide Theos FORK, scheme `roothide`, deb tagged
+#              iphoneos-arm64e. The `roothide` scheme only exists in the fork.
 #
-# Each variant produces two debs: a DEBUG build (NULog on, so NUVolumeProbeOnce
-# actually writes the volume-gate dump) and a FINALPACKAGE release build.
+# Each variant produces two debs. Theos already distinguishes them by version —
+# `1.0.1-1+debug` vs `1.0.1` — so no renaming is needed. The +debug one has
+# NULog compiled in, which is what makes NUVolumeProbeOnce's gate dump appear.
 name: Build deb
+
+# Needed by the release job to create tags and releases with the built-in token.
+permissions:
+  contents: write
 
 on:
   push:
@@ -20,7 +25,6 @@ jobs:
   build:
     name: ${{ matrix.scheme }}
     runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
@@ -28,11 +32,9 @@ jobs:
           - scheme: rootless
             flags: ROOTLESS=1
             theos: https://github.com/theos/theos
-            experimental: false
           - scheme: roothide
             flags: ""
             theos: https://github.com/roothide/theos
-            experimental: true
 
     steps:
       - uses: actions/checkout@v4
@@ -46,20 +48,24 @@ jobs:
         with:
           theos-src: ${{ matrix.theos }}
 
+      # EVERY make invocation needs the variant flag, `clean` included. With no
+      # flag the Makefile falls through to its default branch and sets
+      # THEOS_PACKAGE_SCHEME := roothide, which vanilla Theos rejects outright
+      # ("'roothide' package scheme does not exist") — and it rejects it while
+      # parsing common.mk, i.e. before doing any cleaning, so a bare `make clean`
+      # kills the rootless job on line one.
       - name: Build (DEBUG — includes the volume probe)
         run: |
           set -euxo pipefail
           mkdir -p out
-          make clean
+          make clean ${{ matrix.flags }}
           make package ${{ matrix.flags }} DEBUG=1
-          for f in packages/*.deb; do
-            mv "$f" "out/$(basename "${f%.deb}")-debug.deb"
-          done
+          mv packages/*.deb out/
 
       - name: Build (release)
         run: |
           set -euxo pipefail
-          make clean
+          make clean ${{ matrix.flags }}
           make package ${{ matrix.flags }} FINALPACKAGE=1
           mv packages/*.deb out/
 
@@ -71,3 +77,67 @@ jobs:
           name: nextup3-${{ matrix.scheme }}
           path: out/*.deb
           if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    # Runs even if one variant failed, so a broken roothide build still ships the
+    # rootless deb (and vice versa).
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # merge-multiple flattens both jobs' artifacts into one directory. The deb
+      # names differ by architecture, so nothing collides.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: debs
+          merge-multiple: true
+
+      - name: Collect metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=(debs/*.deb)
+          echo "count=${#found[@]}" >> "$GITHUB_OUTPUT"
+          echo "version=$(grep -m1 '^Version:' control | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+          ls -lh debs/ 2>/dev/null || echo "no debs to publish"
+
+      # gh is preinstalled on the runner, so this needs no third-party action.
+      # Re-running an existing run reuses its run_number, hence the upload path:
+      # the release already exists and its assets are replaced rather than the
+      # whole step failing on a duplicate tag.
+      - name: Publish to Releases
+        if: ${{ steps.meta.outputs.count != '0' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ steps.meta.outputs.version }}-build.${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<'EOF'
+          Automated build.
+
+          | deb | install on |
+          | --- | --- |
+          | `…_iphoneos-arm64.deb` | **rootless** bootstrap (Dopamine) |
+          | `…_iphoneos-arm64e.deb` | **roothide** bootstrap |
+
+          The `1.0.1-1+debug` builds have `NULog` compiled in — that is what makes
+          the `volume probe:` gate dump appear in the log. Use those while the
+          Lock Screen volume row is still unverified; the plain `1.0.1` builds are
+          FINALPACKAGE and log nothing.
+          EOF
+          printf '\nCommit: %s\n' "$GITHUB_SHA" >> notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" debs/*.deb --clobber
+          else
+            gh release create "$TAG" debs/*.deb \
+              --target "$GITHUB_SHA" \
+              --title "$TAG" \
+              --notes-file notes.md \
+              --latest
+          fi
