@@ -67,6 +67,11 @@ BOOL NUVolumeNoteNativeMiss(UIView *nowPlayingView);
 // Forget a recorded miss (the native row turned up after all, e.g. AirPlay engaged).
 void NUVolumeClearNativeMiss(UIView *nowPlayingView);
 
+// State of the system-volume backend, for the layout diagnostics: can we write the
+// volume at all in this process, and what does it currently read as.
+BOOL NUVolumeSystemIsWritable(void);
+float NUVolumeSystemLevel(void);
+
 // One-shot dump of every volume-related gate, ivar and view state MediaRemoteUI
 // exposes, so an unknown build can be read off the log instead of guessed at.
 // DEBUG builds only — NULog compiles out of FINALPACKAGE.

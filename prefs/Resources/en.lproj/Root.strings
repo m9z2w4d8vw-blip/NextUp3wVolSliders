@@ -13,3 +13,7 @@
 "Adds the volume slider to the Lock Screen player, the one Control Center already has. Apple only lays it out there while the session is on AirPlay; this unhides it for local playback too. If it stays missing, switch on the tweak's own slider below." = "Adds the volume slider to the Lock Screen player, the one Control Center already has. Apple only lays it out there while the session is on AirPlay; this unhides it for local playback too. If it stays missing, switch on the tweak's own slider below.";
 "Volume Slider" = "Volume Slider";
 "Use NextUp's Own Slider" = "Use NextUp's Own Slider";
+"Diagnostics" = "Diagnostics";
+"Collects the per-process logs into one text file and opens the share sheet, so it can be saved to Files or mailed. Requires the DEBUG build of the tweak — release builds compile logging out. Clear the log first, reproduce the problem, then export." = "Collects the per-process logs into one text file and opens the share sheet, so it can be saved to Files or mailed. Requires the DEBUG build of the tweak — release builds compile logging out. Clear the log first, reproduce the problem, then export.";
+"Export Debug Log" = "Export Debug Log";
+"Clear Debug Log" = "Clear Debug Log";

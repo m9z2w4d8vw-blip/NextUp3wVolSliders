@@ -159,6 +159,31 @@
 			<key>defaults</key>
 			<string>com.yves.nextup3</string>
 		</dict>
+
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Diagnostics</string>
+			<key>footerText</key>
+			<string>Collects the per-process logs into one text file and opens the share sheet, so it can be saved to Files or mailed. Requires the DEBUG build of the tweak — release builds compile logging out. Clear the log first, reproduce the problem, then export.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Export Debug Log</string>
+			<key>action</key>
+			<string>exportLog:</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Clear Debug Log</string>
+			<key>action</key>
+			<string>clearLog:</string>
+		</dict>
 	</array>
 </dict>
 </plist>

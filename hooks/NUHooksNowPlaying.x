@@ -19,6 +19,28 @@
 static void * const kNUPushedShowKey  = (void *)&kNUPushedShowKey;
 static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
 
+// Last volume-layout line logged for a view, so the per-layout diagnostics below
+// only write when something actually changed (-layoutSubviews runs constantly).
+static void * const kNUVolumeLogKey = (void *)&kNUVolumeLogKey;
+
+static void NULogVolumeLayout(UIView *npView, BOOL custom, CGFloat reserved, UIView *strip) {
+    UIView *native = NUVolumeNativeView(npView);
+    NSString *line = [NSString stringWithFormat:
+        @"volume layout: mode=%@ platterH=%.1f reserved=%.1f native=%@ nativeFrame=%@ "
+        @"strip=%@ stripFrame=%@ writable=%d level=%.2f",
+        custom ? @"custom" : @"native",
+        npView.bounds.size.height, reserved,
+        native ? NSStringFromClass(native.class) : @"(none)",
+        native ? NSStringFromCGRect(native.frame) : @"-",
+        strip ? (strip.hidden ? @"hidden" : @"visible") : @"(none)",
+        strip ? NSStringFromCGRect(strip.frame) : @"-",
+        NUVolumeSystemIsWritable(), NUVolumeSystemLevel()];
+    NSString *last = objc_getAssociatedObject(npView, kNUVolumeLogKey);
+    if ([last isEqualToString:line]) return;
+    objc_setAssociatedObject(npView, kNUVolumeLogKey, line, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NULog("%{public}@", line);
+}
+
 // The now-playing VC that owns a player view.
 static MRUNowPlayingViewController *NUOwningNowPlayingVC(UIView *view) {
     Class NPVC = objc_getClass("MRUNowPlayingViewController");
@@ -59,7 +81,11 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
 
     if (!NUViewUsesCustomVolume(npView)) {
         strip.hidden = YES;
-        if (NUVolumeRevealNative(npView)) { NUVolumeClearNativeMiss(npView); return; }
+        if (NUVolumeRevealNative(npView)) {
+            NUVolumeClearNativeMiss(npView);
+            NULogVolumeLayout(npView, NO, 0.0, nil);
+            return;
+        }
         BOOL flipped = NUVolumeNoteNativeMiss(npView);
         MRUNowPlayingViewController *vc = flipped ? NUOwningNowPlayingVC(npView) : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -80,6 +106,7 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
     CGRect b = npView.bounds;   // clamp cleared → the real, grown height
     strip.frame = CGRectMake(0, b.size.height - rowH - volH, b.size.width, volH);
     [strip refreshFromSystem];
+    NULogVolumeLayout(npView, YES, rowH + volH, strip);
 }
 
 %group NUNowPlaying
@@ -233,6 +260,27 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
     CGFloat pushedW = [objc_getAssociatedObject(self, kNUPushedWidthKey) doubleValue];
     BOOL needSync = (pushedShow == nil) ? (state != 0)
                                         : (pushedShow.integerValue != state || fabs(pushedW - curW) > 0.5);
+
+    // The state signature assumes OUR content is the only thing that can change the
+    // platter's fitting size. That holds for the Up Next row (constant height, ours to
+    // show or hide) but NOT for Apple's own volume row: the forced availability gates
+    // are consulted a layout pass or two after this VC first appears, so Apple grows
+    // its -sizeThatFits: with no state flip of ours to notice — and the short-circuit
+    // above then never pushes the taller size. The platter stays compact while Apple
+    // lays its volume row out anyway, which lands it on top of the transport row.
+    //
+    // So when the native volume row is in play, also accept a plain disagreement
+    // between what Apple now measures and what we last published. -sizeThatFits: on
+    // its own is cheap; the expensive part (invalidate + whole-chain setNeedsLayout +
+    // synchronous layoutIfNeeded) still only runs when there is a real difference.
+    if (!needSync && NUViewShowsVolume(self.view) && !NUViewUsesCustomVolume(self.view) && curW > 0) {
+        CGSize probe = [self.view sizeThatFits:CGSizeMake(curW, CGFLOAT_MAX)];
+        if (probe.height > 0 && fabs(probe.height - self.preferredContentSize.height) > 0.5) {
+            NULog("MRU: native volume row changed Apple's fit %.0f -> %.0f with no state flip",
+                  self.preferredContentSize.height, probe.height);
+            needSync = YES;
+        }
+    }
     if (!needSync) return;
     objc_setAssociatedObject(self, kNUPushedShowKey, @(state), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(self, kNUPushedWidthKey, @(curW), OBJC_ASSOCIATION_RETAIN_NONATOMIC);

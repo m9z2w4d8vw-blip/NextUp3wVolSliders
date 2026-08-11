@@ -201,6 +201,22 @@ behind `CSMediaControlsViewController` (different height levers, see
 Settings rows hide themselves there rather than offering a dead toggle. Control Center
 and the Dynamic Island already have Apple's slider and are untouched.
 
+A note on the platter height, because it is the subtle part. The Up Next row's height
+is constant and ours to show or hide, so `-nu_syncPlatterHeight` short-circuits on a
+show-state signature. Apple's native volume row breaks that assumption: the forced
+gates are consulted a layout pass or two after the VC appears, so Apple's own
+`-sizeThatFits:` grows with no state flip for the signature to notice, the taller size
+is never published, and Apple lays its volume row out into a platter that never grew —
+landing it on top of the transport row. So when the native row is in play the sync also
+accepts a plain disagreement between Apple's current fit and the last published
+`preferredContentSize`; `-sizeThatFits:` alone is cheap, and the expensive forced
+relayout still only runs on a real difference.
+
+Settings › Diagnostics has **Export Debug Log**, which collects
+`/var/mobile/nu/nextup3-*.log` plus the device/OS/preference state into one text file
+and opens the share sheet. Only the display-side processes write there; the media apps
+are container-redirected and their logs are reachable only through Filza.
+
 If the row doesn't turn up, build with `make package DEBUG=1` and unlock with music
 playing: `NUVolumeProbeOnce` dumps every volume-shaped selector MediaRemoteUI declares,
 its return encoding, its live answer on the player, and how the classifier scored it —

@@ -303,4 +303,117 @@ static UIImage *NUAppIconImage(NSString *bundleID) {
     NUPrefsPublishState();
 }
 
+#pragma mark - Debug log export
+
+// Where NULogFile.m lands the per-process logs. SpringBoard and MediaRemoteUI — the
+// two processes that draw the now-playing UI, so the two that matter for the volume
+// row — can both write here. The media apps are container-redirected and write inside
+// their own sandboxes instead, which Preferences cannot read; their logs are reachable
+// only through Filza.
+static NSString * const kNULogDirectory = @"/var/mobile/nu";
+static const unsigned long long kNULogExportCap = 512 * 1024;   // keep the share sheet sane
+
+// Every switch in the pane, so the export states what the tweak was actually
+// configured to do rather than making it a question in the bug report.
+static NSArray<NSString *> *NUAllPrefKeys(void) {
+    return @[ @"Enabled", @"enabledMusic", @"enabledPodcasts", @"enabledYouTubeMusic",
+              @"enabledSpotify", @"showLockScreen", @"showDynamicIsland",
+              @"showControlCenter", @"showVolumeSlider", @"volumeSliderCustom" ];
+}
+
+- (NSString *)_nuBuildLogReport {
+    NSMutableString *out = [NSMutableString string];
+    NSProcessInfo *info = NSProcessInfo.processInfo;
+    [out appendString:@"NextUp 3 — debug log export\n"];
+    [out appendFormat:@"Exported: %@\n", [NSDate date]];
+    [out appendFormat:@"iOS: %@\n", info.operatingSystemVersionString];
+    [out appendFormat:@"Device: %@ (%@)\n", UIDevice.currentDevice.model,
+                      UIDevice.currentDevice.systemVersion];
+    [out appendFormat:@"Dynamic Island: %@\n", NUDeviceHasDynamicIsland() ? @"yes" : @"no"];
+    [out appendFormat:@"Volume row supported on this iOS: %@\n\n",
+                      NUVolumeRowSupported() ? @"yes" : @"no"];
+
+    [out appendString:@"Settings\n"];
+    for (NSString *key in NUAllPrefKeys()) {
+        // Defaults here only matter for a key never written; the two volume keys
+        // default off, everything else on — same as Root.plist.
+        BOOL def = ![key hasPrefix:@"showVolumeSlider"] && ![key hasPrefix:@"volumeSliderCustom"];
+        [out appendFormat:@"  %-22@ %@\n", key, NUPrefBool(key, def) ? @"on" : @"off"];
+    }
+    [out appendString:@"\n"];
+
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray<NSString *> *names = [[fm contentsOfDirectoryAtPath:kNULogDirectory error:NULL]
+                                  sortedArrayUsingSelector:@selector(compare:)];
+    NSArray<NSString *> *logs = [names filteredArrayUsingPredicate:
+                                 [NSPredicate predicateWithFormat:@"self ENDSWITH '.log'"]];
+    if (logs.count == 0) {
+        [out appendFormat:@"No logs found in %@.\n\n"
+             @"The file log only exists in a DEBUG build — the release (FINALPACKAGE) deb\n"
+             @"compiles NULog out entirely. Install the 1.0.1-1+debug deb, reproduce the\n"
+             @"problem, then export again.\n", kNULogDirectory];
+        return out;
+    }
+
+    for (NSString *name in logs) {
+        NSString *path = [kNULogDirectory stringByAppendingPathComponent:name];
+        unsigned long long size = [[fm attributesOfItemAtPath:path error:NULL] fileSize];
+        [out appendFormat:@"===== %@ (%llu bytes) =====\n", name, size];
+        NSString *body = [NSString stringWithContentsOfFile:path
+                                                  encoding:NSUTF8StringEncoding error:NULL];
+        if (!body) { [out appendString:@"(unreadable)\n\n"]; continue; }
+        // Keep the tail: the interesting lines are the most recent ones.
+        if (body.length > kNULogExportCap) {
+            body = [@"...(truncated, showing the tail)...\n"
+                    stringByAppendingString:[body substringFromIndex:body.length - kNULogExportCap]];
+        }
+        [out appendString:body];
+        if (![body hasSuffix:@"\n"]) [out appendString:@"\n"];
+        [out appendString:@"\n"];
+    }
+    return out;
+}
+
+// Writes the combined report into Preferences' own tmp (always writable, no matter
+// what the log directory's permissions are) and hands it to the share sheet, so it
+// can go to Files, Mail, AirDrop or anywhere else.
+- (void)exportLog:(PSSpecifier *)specifier {
+    NSString *report = [self _nuBuildLogReport];
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"nextup3-debug.txt"];
+    NSError *err = nil;
+    if (![report writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&err]) {
+        [self _nuAlert:@"Export failed" message:err.localizedDescription ?: @"Could not write the file."];
+        return;
+    }
+    UIActivityViewController *share =
+        [[UIActivityViewController alloc] initWithActivityItems:@[ [NSURL fileURLWithPath:path] ]
+                                         applicationActivities:nil];
+    // iPad presents this as a popover and throws without an anchor.
+    share.popoverPresentationController.sourceView = self.view;
+    share.popoverPresentationController.sourceRect =
+        CGRectMake(self.view.bounds.size.width / 2.0, self.view.bounds.size.height / 2.0, 1, 1);
+    [self presentViewController:share animated:YES completion:nil];
+}
+
+- (void)clearLog:(PSSpecifier *)specifier {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSInteger removed = 0;
+    for (NSString *name in [fm contentsOfDirectoryAtPath:kNULogDirectory error:NULL]) {
+        if (![name hasSuffix:@".log"]) continue;
+        if ([fm removeItemAtPath:[kNULogDirectory stringByAppendingPathComponent:name] error:NULL])
+            removed++;
+    }
+    [self _nuAlert:@"Debug log cleared"
+           message:[NSString stringWithFormat:@"Removed %ld log file(s). Reproduce the problem, "
+                                              @"then export.", (long)removed]];
+}
+
+- (void)_nuAlert:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                  message:message
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 @end

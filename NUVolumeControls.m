@@ -97,9 +97,11 @@ static void NUVolumeSystemSet(float volume) {
     [sc setVolumeTo:MAX(0.0f, MIN(1.0f, volume)) forCategory:kNUVolumeCategory];
 }
 
-static BOOL NUVolumeSystemWritable(void) {
+BOOL NUVolumeSystemIsWritable(void) {
     return [NUVolumeSystemController() respondsToSelector:@selector(setVolumeTo:forCategory:)];
 }
+
+float NUVolumeSystemLevel(void) { return NUVolumeSystemGet(); }
 
 #pragma mark - Native gate discovery
 
@@ -322,7 +324,7 @@ void NUVolumeProbeOnce(UIView *nowPlayingView) {
             if (methods) free(methods);
         }
         NULog("volume probe: AVSystemController writable=%d current=%.2f",
-              NUVolumeSystemWritable(), NUVolumeSystemGet());
+              NUVolumeSystemIsWritable(), NUVolumeSystemGet());
     });
 #else
     (void)nowPlayingView;
@@ -390,7 +392,7 @@ static UIColor *NUVolumeColor(CGFloat alpha) {
       forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
     [self addSubview:_slider];
 
-    if (!NUVolumeSystemWritable()) {
+    if (!NUVolumeSystemIsWritable()) {
         // Read-only: leave the slider visible (it still reflects the hardware buttons)
         // but don't pretend it can be dragged.
         _slider.enabled = NO;
@@ -454,11 +456,39 @@ static UIColor *NUVolumeColor(CGFloat alpha) {
     else [self refreshFromSystem];
 }
 
-- (void)nu_sliderChanged:(UISlider *)slider { NUVolumeSystemSet(slider.value); }
-- (void)nu_sliderDown:(UISlider *)slider { self.dragging = YES; }
+- (void)nu_sliderChanged:(UISlider *)slider {
+    NUVolumeSystemSet(slider.value);
+    NULog("volume strip: slider -> %.3f (system now %.3f)", slider.value, NUVolumeSystemGet());
+}
+
+- (void)nu_sliderDown:(UISlider *)slider {
+    self.dragging = YES;
+    NULog("volume strip: slider touch down, value %.3f", slider.value);
+}
+
 - (void)nu_sliderUp:(UISlider *)slider {
     self.dragging = NO;
     NUVolumeSystemSet(slider.value);
+    NULog("volume strip: slider released at %.3f", slider.value);
+}
+
+#pragma mark Touch instrumentation
+
+// "The slider is there but I can't drag it" has two very different causes — the
+// touch never arrives (something above us is eating it, or the platter's remote
+// scene isn't forwarding), or it arrives and the write is refused. These three
+// lines tell the two apart in the log rather than by guesswork.
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    NULog("volume strip: hitTest %{public}@ -> %{public}@ (sliderEnabled=%d)",
+          NSStringFromCGPoint(point),
+          hit ? NSStringFromClass(hit.class) : @"(nil)", self.slider.enabled);
+    return hit;
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    NULog("volume strip: touchesBegan on the strip itself (not the slider)");
+    [super touchesBegan:touches withEvent:event];
 }
 
 #pragma mark Layout
