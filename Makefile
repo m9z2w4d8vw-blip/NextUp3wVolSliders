@@ -19,12 +19,41 @@ INSTALL_TARGET_PROCESSES = MediaRemoteUI Music Podcasts SpringBoard YouTubeMusic
 
 include $(THEOS)/makefiles/common.mk
 
-# arm64e: clang 17 signs the class_ro pointer of every Objective-C class, and
-# only libobjc from iOS 17 on authenticates that slot. Older runtimes dereference
-# the signed pointer as-is, so the injected process dies in readClass() while dyld
-# maps the tweak. Probed rather than hardcoded — clangs that reject the flag do
-# not emit the signing either.
-NU_PTRAUTH_CFLAGS := $(shell $(TARGET_CC) -x objective-c -fsyntax-only -fno-ptrauth-objc-class-ro /dev/null >/dev/null 2>&1 && echo -fno-ptrauth-objc-class-ro)
+# arm64e: clang signs the class_ro pointer of every Objective-C class, and the
+# libobjc that reads it back does not always authenticate that slot. When it does not,
+# the injected process dies the instant dyld maps this dylib — inside
+# libobjc's readClass(), EXC_BAD_ACCESS / SIGBUS, ESR "Address size fault", with x0
+# holding one of our classes. Verified on iPhone14,5 @ iOS 17.0: every media app died
+# that way, four identical reports, x0 = OBJC_CLASS_$_NUProviderBase.
+#
+# This probe used to run $(TARGET_CC) BARE. That is only correct on macOS, where the
+# compiler's default target is already an Apple one. On a Linux Theos host the default
+# target is the build machine, the flag is rejected there, the probe silently yields
+# nothing — and the signing is emitted for the real arm64e compile anyway. A dylib that
+# kills every process it is injected into, produced without one warning.
+#
+# So: probe with a real Apple triple, and treat an unsupported flag as a BUILD FAILURE
+# rather than a silent omission. NU_ALLOW_SIGNED_CLASS_RO=1 overrides, for a toolchain
+# that rejects the flag and a runtime known to authenticate the slot properly.
+NU_PTRAUTH_FLAG := -fno-ptrauth-objc-class-ro
+NU_PTRAUTH_SUPPORTED := $(shell $(TARGET_CC) -target arm64e-apple-ios15.0 -x objective-c \
+	-fsyntax-only $(NU_PTRAUTH_FLAG) /dev/null >/dev/null 2>&1 && echo yes)
+
+ifeq ($(NU_PTRAUTH_SUPPORTED),yes)
+NU_PTRAUTH_CFLAGS := $(NU_PTRAUTH_FLAG)
+else ifeq ($(filter arm64e,$(ARCHS)),)
+# No arm64e slice, so nothing signs a class_ro and the flag is moot.
+NU_PTRAUTH_CFLAGS :=
+else ifeq ($(NU_ALLOW_SIGNED_CLASS_RO),1)
+NU_PTRAUTH_CFLAGS :=
+else
+$(error $(NU_PTRAUTH_FLAG) is not accepted by $(TARGET_CC), but arm64e is in ARCHS. \
+Building anyway would emit signed class_ro pointers and produce a dylib that crashes \
+every process it is injected into. Fix the toolchain, drop arm64e from ARCHS, or set \
+NU_ALLOW_SIGNED_CLASS_RO=1 if you know this runtime authenticates that slot.)
+endif
+
+$(info NextUp3: arm64e class_ro signing -> $(if $(NU_PTRAUTH_CFLAGS),disabled via $(NU_PTRAUTH_CFLAGS),LEFT ENABLED))
 export NU_PTRAUTH_CFLAGS
 
 TWEAK_NAME = NextUp3

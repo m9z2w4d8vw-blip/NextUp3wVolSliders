@@ -64,15 +64,35 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p out
+          LOG=build-debug.log
           make clean ${{ matrix.flags }}
-          make package ${{ matrix.flags }} DEBUG=1
+          make package ${{ matrix.flags }} DEBUG=1 2>&1 | tee "$LOG"
+          # The arm64e class_ro signing is what killed every media app on the first
+          # working build: libobjc dereferenced the signed pointer raw and the process
+          # died in readClass() before a line of tweak code ran. The Makefile now fails
+          # loudly rather than omitting the flag, but assert on the output too — a deb
+          # built without it is worse than no deb.
+          grep -q "class_ro signing -> disabled" "$LOG" || {
+            echo "::error::arm64e class_ro signing was NOT disabled; refusing to ship this deb"
+            exit 1
+          }
           mv packages/*.deb out/
 
       - name: Build (release)
         run: |
           set -euxo pipefail
+          LOG=build-release.log
           make clean ${{ matrix.flags }}
-          make package ${{ matrix.flags }} FINALPACKAGE=1
+          make package ${{ matrix.flags }} FINALPACKAGE=1 2>&1 | tee "$LOG"
+          # The arm64e class_ro signing is what killed every media app on the first
+          # working build: libobjc dereferenced the signed pointer raw and the process
+          # died in readClass() before a line of tweak code ran. The Makefile now fails
+          # loudly rather than omitting the flag, but assert on the output too — a deb
+          # built without it is worse than no deb.
+          grep -q "class_ro signing -> disabled" "$LOG" || {
+            echo "::error::arm64e class_ro signing was NOT disabled; refusing to ship this deb"
+            exit 1
+          }
           mv packages/*.deb out/
 
       - name: List what we built

@@ -222,6 +222,28 @@ playing: `NUVolumeProbeOnce` dumps every volume-shaped selector MediaRemoteUI de
 its return encoding, its live answer on the player, and how the classifier scored it —
 which is enough to name the real gate instead of guessing at it.
 
+## Building for arm64e off a Mac
+
+The one that bites. clang signs the `class_ro` pointer of every Objective-C class on
+arm64e, and the libobjc reading it back does not always authenticate that slot; when it
+does not, the injected process dies the moment dyld maps the dylib — inside
+`readClass()`, `EXC_BAD_ACCESS`/`SIGBUS`, ESR "Address size fault", `x0` holding one of
+our classes. Nothing of ours has run at that point, so no log and no hook is implicated;
+it looks like the tweak's code is at fault when the compile flags are.
+
+`-fno-ptrauth-objc-class-ro` turns the signing off, and the Makefile used to probe for it
+by running `$(TARGET_CC)` bare. That is correct only on macOS, where the compiler's
+default target is already an Apple one. On a Linux Theos host the default target is the
+build machine, the flag is rejected there, the probe silently yields nothing, and the
+signing is emitted for the real arm64e compile regardless — a dylib that kills every
+process it is injected into, built without a single warning. Verified on iPhone14,5 @
+17.0: four identical reports, `x0 = OBJC_CLASS_$_NUProviderBase`, every media app.
+
+So the probe now uses an explicit `arm64e-apple-ios` triple, an unsupported flag is a
+hard `$(error)` rather than a silent omission whenever arm64e is in `ARCHS`
+(`NU_ALLOW_SIGNED_CLASS_RO=1` overrides), and the build prints which way it went. CI
+greps for that line and refuses to publish a deb without it.
+
 ## Adding support for another app
 
 The design is table-driven, so a new source stays localized:
