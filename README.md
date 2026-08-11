@@ -241,8 +241,15 @@ process it is injected into, built without a single warning. Verified on iPhone1
 
 So the probe now uses an explicit `arm64e-apple-ios` triple, an unsupported flag is a
 hard `$(error)` rather than a silent omission whenever arm64e is in `ARCHS`
-(`NU_ALLOW_SIGNED_CLASS_RO=1` overrides), and the build prints which way it went. CI
-greps for that line and refuses to publish a deb without it.
+(`NU_ALLOW_SIGNED_CLASS_RO=1` overrides), and every safe outcome prints
+`NextUp3: ptrauth-safe: …`. CI greps for that and refuses to publish a deb without it.
+
+And the answer to the probe is now known: **the Theos Linux toolchain's clang does not
+have the flag at all.** `theos/toolchain/linux/iphone/bin/clang` rejects it outright, so
+Linux cannot produce a usable arm64e slice for this tweak — not with a better probe, not
+with a different triple. CI therefore builds twice: on a macOS runner with Xcode's clang
+for the real `arm64 arm64e` deb, and on Ubuntu with `ARCHS=arm64` as a fallback whose
+worst case is a dylib that never gets loaded rather than one that kills its host.
 
 ## Adding support for another app
 

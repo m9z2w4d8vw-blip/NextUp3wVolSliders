@@ -39,21 +39,28 @@ NU_PTRAUTH_FLAG := -fno-ptrauth-objc-class-ro
 NU_PTRAUTH_SUPPORTED := $(shell $(TARGET_CC) -target arm64e-apple-ios15.0 -x objective-c \
 	-fsyntax-only $(NU_PTRAUTH_FLAG) /dev/null >/dev/null 2>&1 && echo yes)
 
+# The three safe outcomes all print "ptrauth-safe", which is what CI asserts on. The
+# override branch deliberately does not.
 ifeq ($(NU_PTRAUTH_SUPPORTED),yes)
 NU_PTRAUTH_CFLAGS := $(NU_PTRAUTH_FLAG)
+$(info NextUp3: ptrauth-safe: class_ro signing disabled via $(NU_PTRAUTH_FLAG) [ARCHS=$(ARCHS)])
 else ifeq ($(filter arm64e,$(ARCHS)),)
 # No arm64e slice, so nothing signs a class_ro and the flag is moot.
 NU_PTRAUTH_CFLAGS :=
+$(info NextUp3: ptrauth-safe: no arm64e slice, nothing to disable [ARCHS=$(ARCHS)])
 else ifeq ($(NU_ALLOW_SIGNED_CLASS_RO),1)
 NU_PTRAUTH_CFLAGS :=
+$(warning NextUp3: class_ro signing left ENABLED by NU_ALLOW_SIGNED_CLASS_RO=1 — expect \
+every injected process to die in libobjc readClass() unless this runtime authenticates \
+that slot.)
 else
 $(error $(NU_PTRAUTH_FLAG) is not accepted by $(TARGET_CC), but arm64e is in ARCHS. \
-Building anyway would emit signed class_ro pointers and produce a dylib that crashes \
-every process it is injected into. Fix the toolchain, drop arm64e from ARCHS, or set \
-NU_ALLOW_SIGNED_CLASS_RO=1 if you know this runtime authenticates that slot.)
+Building anyway emits signed class_ro pointers and produces a dylib that crashes every \
+process it is injected into (verified: iOS 17.0, libobjc readClass, SIGBUS). The Theos \
+LINUX toolchain does not have this flag — build on macOS with Xcode's clang, which does, \
+or pass ARCHS=arm64 to ship an arm64-only slice. NU_ALLOW_SIGNED_CLASS_RO=1 forces it.)
 endif
 
-$(info NextUp3: arm64e class_ro signing -> $(if $(NU_PTRAUTH_CFLAGS),disabled via $(NU_PTRAUTH_CFLAGS),LEFT ENABLED))
 export NU_PTRAUTH_CFLAGS
 
 TWEAK_NAME = NextUp3

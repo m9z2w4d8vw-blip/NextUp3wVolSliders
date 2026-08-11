@@ -1,18 +1,22 @@
-# Builds NextUp 3 debs on a Linux runner — no Mac needed. Every successful run
-# attaches its debs to a GitHub Release as well as to the run's Artifacts.
+# Builds NextUp 3 rootless debs. Two runners on purpose, because the arm64e slice is
+# the whole problem:
 #
-# Two variants, matching the two bootstraps:
-#   rootless — vanilla Theos, scheme `rootless`, deb tagged iphoneos-arm64
-#              (this is the one for Dopamine)
-#   roothide — the roothide Theos FORK, scheme `roothide`, deb tagged
-#              iphoneos-arm64e. The `roothide` scheme only exists in the fork.
+#   xcode-arm64e (macOS)  — Apple's clang, so -fno-ptrauth-objc-class-ro exists and the
+#                           arm64e slice is built without signed class_ro pointers. This
+#                           is the deb to install. It is also how upstream builds.
+#   linux-arm64 (Ubuntu)  — the Theos Linux toolchain has no such flag, so an arm64e
+#                           slice from it kills every process it is injected into
+#                           (libobjc readClass, SIGBUS — verified on iOS 17.0). ARCHS is
+#                           forced to arm64 alone here, which is safe: worst case an
+#                           arm64-only dylib is not loaded into arm64e processes and the
+#                           tweak simply does nothing. Fallback only.
 #
-# Each variant produces two debs. Theos already distinguishes them by version —
-# `1.0.1-1+debug` vs `1.0.1` — so no renaming is needed. The +debug one has
-# NULog compiled in, which is what makes NUVolumeProbeOnce's gate dump appear.
+# ARCHS has to be passed on the MAKE COMMAND LINE, not the environment: the Makefile
+# assigns it with `export ARCHS := …`, and a command-line variable is the only kind that
+# overrides a makefile assignment. It also has to go on `make clean` — the ptrauth block
+# is parsed on every invocation and would $(error) out of a bare clean.
 name: Build deb
 
-# Needed by the release job to create tags and releases with the built-in token.
 permissions:
   contents: write
 
@@ -23,99 +27,90 @@ on:
 
 jobs:
   build:
-    name: ${{ matrix.scheme }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - scheme: rootless
-            flags: ROOTLESS=1
-            # Upstream Theos's Logos truncates whatever follows a %orig
-            # substitution on the same line; the hooks are written so nothing
-            # ever does. If a future Logos change breaks the build again anyway,
-            # swap in the roothide fork below — its Logos does not have that
-            # behaviour, and `rootless` is a standard scheme it still ships.
-            theos: https://github.com/theos/theos
-            # theos: https://github.com/roothide/theos
-          - scheme: roothide
-            flags: ""
-            theos: https://github.com/roothide/theos
+          - label: xcode-arm64e
+            os: macos-latest
+            archs: arm64 arm64e
+            suffix: xcode
+          - label: linux-arm64
+            os: ubuntu-latest
+            archs: arm64
+            suffix: linux-arm64only
 
     steps:
       - uses: actions/checkout@v4
 
-      # Clones Theos, pulls the Linux toolchain and the theos/sdks tree, exports
-      # $THEOS. The SDK it lands is also what the prefs subproject links the
-      # private Preferences framework against — if that step complains, pin one
-      # with NUPREFS_PRIVATE_SDK=iPhoneOS16.5.sdk on the make lines below.
       - name: Install Theos
         uses: Randomblock1/theos-action@v1
-        with:
-          theos-src: ${{ matrix.theos }}
 
-      # EVERY make invocation needs the variant flag, `clean` included. With no
-      # flag the Makefile falls through to its default branch and sets
-      # THEOS_PACKAGE_SCHEME := roothide, which vanilla Theos rejects outright
-      # ("'roothide' package scheme does not exist") — and it rejects it while
-      # parsing common.mk, i.e. before doing any cleaning, so a bare `make clean`
-      # kills the rootless job on line one.
+      # Which clang, and does it take the flag. Purely informational, never fatal — the
+      # Makefile enforces the outcome. Worth having in the log because "the flag does not
+      # exist" and "the triple is wrong" produce the same silent empty probe result, and
+      # only one of them is a toolchain limitation.
+      - name: Probe the ptrauth flag
+        continue-on-error: true
+        run: |
+          set +e
+          CLANG="$THEOS/toolchain/linux/iphone/bin/clang"
+          [ -x "$CLANG" ] || CLANG="$(xcrun -f clang 2>/dev/null || command -v clang)"
+          echo "clang: $CLANG"
+          echo "--- flag, no triple ---"
+          "$CLANG" -x objective-c -fsyntax-only -fno-ptrauth-objc-class-ro /dev/null; echo "rc=$?"
+          echo "--- flag + arm64e triple ---"
+          "$CLANG" -target arm64e-apple-ios15.0 -x objective-c -fsyntax-only \
+            -fno-ptrauth-objc-class-ro /dev/null; echo "rc=$?"
+          echo "--- arm64e triple alone ---"
+          "$CLANG" -target arm64e-apple-ios15.0 -x objective-c -fsyntax-only /dev/null; echo "rc=$?"
+
       - name: Build (DEBUG — includes the volume probe)
         run: |
           set -euxo pipefail
           mkdir -p out
-          LOG=build-debug.log
-          make clean ${{ matrix.flags }}
-          make package ${{ matrix.flags }} DEBUG=1 2>&1 | tee "$LOG"
-          # The arm64e class_ro signing is what killed every media app on the first
-          # working build: libobjc dereferenced the signed pointer raw and the process
-          # died in readClass() before a line of tweak code ran. The Makefile now fails
-          # loudly rather than omitting the flag, but assert on the output too — a deb
-          # built without it is worse than no deb.
-          grep -q "class_ro signing -> disabled" "$LOG" || {
-            echo "::error::arm64e class_ro signing was NOT disabled; refusing to ship this deb"
+          make clean ROOTLESS=1 ARCHS="${{ matrix.archs }}"
+          make package ROOTLESS=1 ARCHS="${{ matrix.archs }}" DEBUG=1 2>&1 | tee build-debug.log
+          grep -q "NextUp3: ptrauth-safe" build-debug.log || {
+            echo "::error::class_ro ptrauth was not made safe; refusing to ship this deb"
             exit 1
           }
-          mv packages/*.deb out/
+          for f in packages/*.deb; do
+            mv "$f" "out/$(basename "${f%.deb}")-${{ matrix.suffix }}.deb"
+          done
 
       - name: Build (release)
         run: |
           set -euxo pipefail
-          LOG=build-release.log
-          make clean ${{ matrix.flags }}
-          make package ${{ matrix.flags }} FINALPACKAGE=1 2>&1 | tee "$LOG"
-          # The arm64e class_ro signing is what killed every media app on the first
-          # working build: libobjc dereferenced the signed pointer raw and the process
-          # died in readClass() before a line of tweak code ran. The Makefile now fails
-          # loudly rather than omitting the flag, but assert on the output too — a deb
-          # built without it is worse than no deb.
-          grep -q "class_ro signing -> disabled" "$LOG" || {
-            echo "::error::arm64e class_ro signing was NOT disabled; refusing to ship this deb"
+          make clean ROOTLESS=1 ARCHS="${{ matrix.archs }}"
+          make package ROOTLESS=1 ARCHS="${{ matrix.archs }}" FINALPACKAGE=1 2>&1 | tee build-release.log
+          grep -q "NextUp3: ptrauth-safe" build-release.log || {
+            echo "::error::class_ro ptrauth was not made safe; refusing to ship this deb"
             exit 1
           }
-          mv packages/*.deb out/
+          for f in packages/*.deb; do
+            mv "$f" "out/$(basename "${f%.deb}")-${{ matrix.suffix }}.deb"
+          done
 
       - name: List what we built
         run: ls -lh out/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nextup3-${{ matrix.scheme }}
+          name: nextup3-${{ matrix.label }}
           path: out/*.deb
           if-no-files-found: error
 
   release:
     name: publish release
     needs: build
-    # Runs even if one variant failed, so a broken roothide build still ships the
-    # rootless deb (and vice versa).
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # merge-multiple flattens both jobs' artifacts into one directory. The deb
-      # names differ by architecture, so nothing collides.
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
@@ -132,10 +127,6 @@ jobs:
           echo "version=$(grep -m1 '^Version:' control | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
           ls -lh debs/ 2>/dev/null || echo "no debs to publish"
 
-      # gh is preinstalled on the runner, so this needs no third-party action.
-      # Re-running an existing run reuses its run_number, hence the upload path:
-      # the release already exists and its assets are replaced rather than the
-      # whole step failing on a duplicate tag.
       - name: Publish to Releases
         if: ${{ steps.meta.outputs.count != '0' }}
         env:
@@ -144,17 +135,20 @@ jobs:
         run: |
           set -euo pipefail
           cat > notes.md <<'EOF'
-          Automated build.
+          Automated build. Both debs are rootless (Dopamine); install ONE.
 
-          | deb | install on |
-          | --- | --- |
-          | `…_iphoneos-arm64.deb` | **rootless** bootstrap (Dopamine) |
-          | `…_iphoneos-arm64e.deb` | **roothide** bootstrap |
+          | deb | built with | use |
+          | --- | --- | --- |
+          | `...-xcode.deb` | macOS, Apple clang, arm64 + arm64e | **this one** |
+          | `...-linux-arm64only.deb` | Ubuntu, Theos Linux toolchain, arm64 only | fallback |
 
-          The `1.0.1-1+debug` builds have `NULog` compiled in — that is what makes
-          the `volume probe:` gate dump appear in the log. Use those while the
-          Lock Screen volume row is still unverified; the plain `1.0.1` builds are
-          FINALPACKAGE and log nothing.
+          The Linux toolchain has no `-fno-ptrauth-objc-class-ro`, so an arm64e slice
+          from it emits signed `class_ro` pointers and every injected process dies in
+          libobjc's `readClass()` before any tweak code runs. That build is therefore
+          arm64-only; the macOS build is the correct full-fat one.
+
+          `1.0.1-1+debug` has `NULog` compiled in, which is what makes the
+          `volume probe:` / `volume layout:` lines and the Settings log export work.
           EOF
           printf '\nCommit: %s\n' "$GITHUB_SHA" >> notes.md
 
