@@ -204,6 +204,22 @@ works is an on-device question:
   volume a stray tap near the right edge would blast the output. Reduce Motion gates the
   swell, never the tracking.
 
+  Two things had to be true before it responded to a finger at all, and both were
+  invisible from the outside because they produce the *same* symptom — a slider that
+  displays the volume, follows the hardware buttons, and ignores touch entirely:
+
+  1. `NUHooksSpringBoard`'s paging blocker was scoped to the Up Next row's height. The
+     volume band sits above the row, so a horizontal drag there was claimed by
+     SpringBoard's `UIScrollViewPagingSwipeGestureRecognizer` — with
+     `delaysTouchesBegan`, so the touch never reached the control. No begin, no swell.
+     The protected band is now the sum of whatever surfaces are switched on.
+  2. The control set `enabled = NO` whenever `-setVolumeTo:forCategory:` was missing,
+     which kills tracking (and therefore the swell) as thoroughly as a stolen touch.
+     It is never disabled now; instead the write walks a chain —
+     `-setVolumeTo:forCategory:`, then `-setActiveCategoryVolumeTo:`, then the
+     `MPVolumeSlider` inside the offscreen `MPVolumeView` that is already there for HUD
+     suppression — and logs which one took the value, once, on change.
+
 Scope is **the lock screen on iOS 16 and 17** — the versions whose lock-screen player
 is the `MRUNowPlayingView` that Control Center shares. iOS 14/15 host it in-process
 behind `CSMediaControlsViewController` (different height levers, see

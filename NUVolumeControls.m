@@ -48,8 +48,21 @@ CGFloat NUVolumeControlHeight(void) { return kNUVolumeControlH; }
 + (id)sharedAVSystemController;
 - (BOOL)getVolume:(float *)outVolume forCategory:(NSString *)category;
 - (BOOL)setVolumeTo:(float)volume forCategory:(NSString *)category;
+- (BOOL)setActiveCategoryVolumeTo:(float)volume;
 - (BOOL)setAttribute:(id)attribute forKey:(NSString *)key;
 @end
+
+// MPVolumeSlider, the control inside MPVolumeView. Last-resort write path: it is the
+// system's own volume control, so if AVSystemController will not take a write this one
+// still will. Declared locally for the same reason as everything else here.
+@interface NUMPVolumeSlider : UIView
+@property (nonatomic) float value;
+- (void)_commitVolumeChange;
+@end
+
+// The offscreen MPVolumeView the strip installs to suppress the volume HUD; reused as
+// that last-resort write path. Weak — the strip owns it.
+static __weak UIView *gNUHUDSuppressor = nil;
 
 static NSString * const kNUVolumeCategory = @"Audio";   // media playback volume
 static NSString * const kNUVolumeChangedNotification =
@@ -91,14 +104,50 @@ static float NUVolumeSystemGet(void) {
     return MAX(0.0f, MIN(1.0f, v));
 }
 
-static void NUVolumeSystemSet(float volume) {
-    NUAVSystemController *sc = NUVolumeSystemController();
-    if (![sc respondsToSelector:@selector(setVolumeTo:forCategory:)]) return;
-    [sc setVolumeTo:MAX(0.0f, MIN(1.0f, volume)) forCategory:kNUVolumeCategory];
+// Walk the offscreen MPVolumeView for its MPVolumeSlider and drive that.
+static BOOL NUVolumeSetViaMPVolumeSlider(float volume) {
+    UIView *root = gNUHUDSuppressor;
+    if (!root) return NO;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
+    while (queue.count) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if ([NSStringFromClass(v.class) containsString:@"MPVolumeSlider"]) {
+            NUMPVolumeSlider *slider = (NUMPVolumeSlider *)v;
+            slider.value = volume;
+            if ([slider respondsToSelector:@selector(_commitVolumeChange)])
+                [slider _commitVolumeChange];
+            else if ([slider isKindOfClass:UIControl.class])
+                [(UIControl *)slider sendActionsForControlEvents:UIControlEventValueChanged];
+            return YES;
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+    return NO;
 }
 
+// Which of the write paths actually took the value. Logged once so a device where none of
+// them work says so plainly instead of presenting a slider that silently does nothing.
+static NSString *NUVolumeSystemSet(float volume) {
+    float v = MAX(0.0f, MIN(1.0f, volume));
+    NUAVSystemController *sc = NUVolumeSystemController();
+    if ([sc respondsToSelector:@selector(setVolumeTo:forCategory:)]
+        && [sc setVolumeTo:v forCategory:kNUVolumeCategory]) return @"setVolumeTo:forCategory:";
+    if ([sc respondsToSelector:@selector(setActiveCategoryVolumeTo:)]
+        && [sc setActiveCategoryVolumeTo:v]) return @"setActiveCategoryVolumeTo:";
+    if (NUVolumeSetViaMPVolumeSlider(v)) return @"MPVolumeSlider";
+    return nil;
+}
+
+// Informational only. The control is NEVER disabled on the strength of this: a missing
+// -setVolumeTo:forCategory: used to set enabled=NO, which made the slider inert — no
+// tracking, so no swell either — and indistinguishable from a touch that never arrived.
+// Both failures looked the same from the outside, which cost a diagnostic round trip.
 BOOL NUVolumeSystemIsWritable(void) {
-    return [NUVolumeSystemController() respondsToSelector:@selector(setVolumeTo:forCategory:)];
+    NUAVSystemController *sc = NUVolumeSystemController();
+    return [sc respondsToSelector:@selector(setVolumeTo:forCategory:)]
+        || [sc respondsToSelector:@selector(setActiveCategoryVolumeTo:)]
+        || gNUHUDSuppressor != nil;
 }
 
 float NUVolumeSystemLevel(void) { return NUVolumeSystemGet(); }
@@ -413,6 +462,13 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
     [self setNeedsLayout];
 }
 
+// The capsule is 7pt tall at rest inside a 22pt frame. Give the control the rest of the
+// band vertically so a touch that lands slightly high or low still starts a drag —
+// otherwise the visible target is thinner than a fingertip.
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    return CGRectContainsPoint(CGRectInset(self.bounds, 0, -7.0), point);
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat h = self.held ? kNUVolumeTrackHeldHeight : kNUVolumeTrackRestHeight;
@@ -491,6 +547,7 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
 @property (nonatomic, strong) UIImageView *highGlyph;
 @property (nonatomic, strong) NUVolumeTrackView *track;
 @property (nonatomic, assign) BOOL dragging;
+@property (nonatomic, copy) NSString *lastWritePath;
 @end
 
 @implementation NUVolumeStripView
@@ -519,15 +576,12 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
                       UIControlEventTouchCancel];
     [self addSubview:_track];
 
-    if (!NUVolumeSystemIsWritable()) {
-        // Read-only: leave it visible (it still reflects the hardware buttons) but don't
-        // pretend it can be dragged.
-        _track.enabled = NO;
-        NULog("volume: system volume not writable in %{public}@ — strip is display-only",
-              NSProcessInfo.processInfo.processName);
-    }
-
+    // The HUD suppressor goes in FIRST: it doubles as the last-resort write path, and
+    // NUVolumeSystemIsWritable consults it.
     [self nu_installHUDSuppressor];
+    NULog("volume: writable=%d in %{public}@", NUVolumeSystemIsWritable(),
+          NSProcessInfo.processInfo.processName);
+
     [self refreshFromSystem];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                             selector:@selector(nu_systemVolumeChanged:)
@@ -564,6 +618,7 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
     suppressor.alpha = 0.001;   // must be in the hierarchy; must not be `hidden`
     suppressor.userInteractionEnabled = NO;
     [self addSubview:suppressor];
+    gNUHUDSuppressor = suppressor;
 }
 
 #pragma mark Value plumbing
@@ -583,18 +638,26 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
 }
 
 - (void)nu_trackChanged:(NUVolumeTrackView *)track {
-    NUVolumeSystemSet(track.value);
-    NULog("volume strip: track -> %.3f (system now %.3f)", track.value, NUVolumeSystemGet());
+    NSString *path = NUVolumeSystemSet(track.value)
+                     ?: @"NONE — no AVSystemController setter and no MPVolumeSlider";
+    // Throttled to a change of path, because value-changed fires on every touch-move and
+    // this would otherwise be the entire log. nil is normalised above so a total failure
+    // logs once rather than on every move.
+    if (![path isEqualToString:self.lastWritePath]) {
+        self.lastWritePath = path;
+        NULog("volume strip: write path = %{public}@ (value %.3f, system now %.3f)",
+              path, track.value, NUVolumeSystemGet());
+    }
 }
 
 - (void)nu_trackDown:(NUVolumeTrackView *)track {
     self.dragging = YES;
-    NULog("volume strip: touch down, value %.3f", track.value);
+    NULog("volume strip: touch down at %.3f — tracking started", track.value);
 }
 
 - (void)nu_trackUp:(NUVolumeTrackView *)track {
     self.dragging = NO;
-    NULog("volume strip: released at %.3f", track.value);
+    NULog("volume strip: released at %.3f (system %.3f)", track.value, NUVolumeSystemGet());
 }
 
 #pragma mark Touch instrumentation

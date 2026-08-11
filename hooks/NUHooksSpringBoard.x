@@ -60,14 +60,26 @@ static UIView *NULockScreenPlatter(UIView *pager) {
 //    above), not the whole platter — a vertical notification-list scroll that
 //    starts on the upper platter (artwork/transport) must keep working.
 static BOOL NUShouldBlockPaging(UIGestureRecognizer *gr, NSSet<UITouch *> *touches) {
-    if (!NUMasterEnabled() || !NUInterfaceEnabled(NUHostLockScreen)) return NO;
+    if (!NUMasterEnabled()) return NO;
+    // The two things we own at the bottom of the platter are gated independently, so the
+    // protected band is the sum of whichever are switched on. The volume row is the
+    // reason this is a sum and not just the Up Next row's height: it sits ABOVE the row,
+    // so with the band scoped to the row alone a horizontal drag on the volume slider was
+    // claimed by lock-screen paging — and claimed with delaysTouchesBegan, so the touch
+    // never reached the slider at all. No begin, no swell, no volume change: the control
+    // looked inert rather than fighting something.
+    BOOL rowOn = NUInterfaceEnabled(NUHostLockScreen);
+    BOOL volumeOn = NUVolumeFeatureEnabled();
+    if (!rowOn && !volumeOn) return NO;
     UIView *v = gr.view;
     if (!v) return NO;
     UIWindow *win = v.window;
     if (!win || ![NSStringFromClass(win.class) containsString:@"CoverSheet"]) return NO;
     UIView *platter = NULockScreenPlatter(v);
     if (!platter) return NO;
-    CGFloat rowH = [NUNextUpRowView preferredHeight] + 12.0; // grace band above the separator
+    CGFloat rowH = 12.0;                                     // grace above whatever we own
+    if (rowOn) rowH += [NUNextUpRowView preferredHeight];
+    if (volumeOn) rowH += NUVolumeStripHeight();
     CGRect strip = platter.bounds;
     strip.origin.y = MAX(0.0, strip.size.height - rowH);
     strip.size.height = MIN(rowH, strip.size.height);
