@@ -172,6 +172,14 @@ the session's volume is controllable — i.e. on AirPlay — so local playback g
 slider. Two ways back in, and `NUVolumeControls.m` implements both because which one
 works is an on-device question:
 
+Apple's own row is also given a real chance now. `NUVolumeRevealNative` used to require a
+non-zero height — that is, that *Apple* had laid the row out — which on the lock screen
+never happens, so the fallback engaged every time and Apple's control was never actually
+tried. Existence is the whole test now; we size and place it ourselves, borrowing the
+scrubber's x and width from `timeControlsView` so the two rows align. `Use NextUp's Own
+Slider` forces our capsule instead, which is the escape hatch if Apple's view turns out to
+render empty when Apple didn't lay it out.
+
 - **Native** (default): the availability gate isn't the same selector on every build,
   so `NUVolumeForceNativeGates()` *discovers* it — it walks the classes in
   MediaRemoteUI's image, finds every zero-argument `BOOL` getter whose selector
@@ -213,6 +221,17 @@ works is an on-device question:
      SpringBoard's `UIScrollViewPagingSwipeGestureRecognizer` — with
      `delaysTouchesBegan`, so the touch never reached the control. No begin, no swell.
      The protected band is now the sum of whatever surfaces are switched on.
+  3. And the one that actually mattered: the control was driven by **UIControl touch
+     tracking** — `-touchesBegan:` on the view. That is view-level touch delivery, and an
+     ancestor recognizer with `delaysTouchesBegan` withholds it until the recognizer
+     decides, then cancels it outright if the recognizer wins. The lock screen is thick
+     with such recognizers. Gesture recognizers, by contrast, are fed touches directly and
+     are unaffected by another recognizer's delay — which is precisely why Apple's
+     scrubber registers a drag while an identical drag 40pt below it reached nothing at
+     all. The track is now driven by a `UILongPressGestureRecognizer` with
+     `minimumPressDuration = 0`, the same shape of input Apple's own sliders use, and it
+     allows simultaneous recognition so a volume drag coexists with the lock screen's
+     pans instead of fighting them.
   2. The control set `enabled = NO` whenever `-setVolumeTo:forCategory:` was missing,
      which kills tracking (and therefore the swell) as thoroughly as a stolen touch.
      It is never disabled now; instead the write walks a chain —

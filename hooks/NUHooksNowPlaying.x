@@ -22,6 +22,7 @@ static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
 // Last volume-layout line logged for a view, so the per-layout diagnostics below
 // only write when something actually changed (-layoutSubviews runs constantly).
 static void * const kNUVolumeLogKey = (void *)&kNUVolumeLogKey;
+static void * const kNUVolumeHitLogKey = (void *)&kNUVolumeHitLogKey;
 
 static void NULogVolumeLayout(UIView *npView, BOOL custom, CGFloat reserved, UIView *strip) {
     UIView *native = NUVolumeNativeView(npView);
@@ -95,14 +96,22 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
             // layout has no slot for it — so move it into the band. Keep Apple's x and
             // width (its insets are already right) and take over y only, then bring it
             // to the front so nothing drawn above can intercept the drag.
+            // Size AND place it, borrowing the scrubber's x and width so the two rows line
+            // up — Apple never lays this row out on the lock screen, so its own frame is
+            // not something to preserve.
             UIView *native = NUVolumeNativeView(npView);
+            CGRect scrubber = NUVolumeScrubberFrame(npView);
             CGFloat h = native.bounds.size.height > 1.0 ? native.bounds.size.height : controlH;
-            CGFloat targetY = bandTop + (controlH - h) / 2.0;
-            if (fabs(native.frame.origin.y - targetY) > 0.5) {
-                CGRect f = native.frame;
-                f.origin.y = targetY;
-                native.frame = f;
+            CGRect target;
+            if (!CGRectIsNull(scrubber)) {
+                target = CGRectMake(scrubber.origin.x, bandTop + (controlH - h) / 2.0,
+                                    scrubber.size.width, h);
+            } else {
+                target = CGRectMake(NUVolumeHorizontalInset(),
+                                    bandTop + (controlH - h) / 2.0,
+                                    b.size.width - 2.0 * NUVolumeHorizontalInset(), h);
             }
+            if (!CGRectEqualToRect(native.frame, target)) native.frame = target;
             [npView bringSubviewToFront:native];
             NULogVolumeLayout(npView, NO, rowH + volH, nil);
             return;
@@ -438,6 +447,25 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
     NSNumber *clamp = objc_getAssociatedObject(self, kNULayoutClampKey);
     if (clamp) b.size.height -= clamp.doubleValue;
     return b;
+}
+
+// Where does a touch in the lower half of the platter actually land? This is the one
+// question that separates "the control never saw the touch" from "the control saw it and
+// did nothing", and it cannot be answered from a screen recording. Logged only for the
+// region we own, and only when it changes, so it is not the entire log.
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = %orig;
+    if (NUViewShowsVolume(self) && point.y > self.bounds.size.height * 0.5) {
+        NSString *line = [NSString stringWithFormat:@"volume hitTest: y=%.0f of %.0f -> %@",
+                          point.y, self.bounds.size.height,
+                          hit ? NSStringFromClass(hit.class) : @"(nil)"];
+        NSString *last = objc_getAssociatedObject(self, kNUVolumeHitLogKey);
+        if (![last isEqualToString:line]) {
+            objc_setAssociatedObject(self, kNUVolumeHitLogKey, line, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NULog("%{public}@", line);
+        }
+    }
+    return hit;
 }
 
 - (void)layoutSubviews {

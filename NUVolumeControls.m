@@ -38,6 +38,7 @@ BOOL NUVolumeCustomPreferred(void) {
 
 CGFloat NUVolumeStripHeight(void) { return kNUVolumeStripHeight; }
 CGFloat NUVolumeControlHeight(void) { return kNUVolumeControlH; }
+CGFloat NUVolumeHorizontalInset(void) { return kNUVolumeHInset; }
 
 #pragma mark - System volume (AVSystemController)
 
@@ -277,12 +278,24 @@ UIView *NUVolumeNativeView(UIView *nowPlayingView) {
 BOOL NUVolumeRevealNative(UIView *nowPlayingView) {
     UIView *native = NUVolumeNativeView(nowPlayingView);
     if (!native) return NO;
-    // Apple hides rather than removes it in some states; both are cheap to undo, and
-    // neither is what keeps it out of the layout (that is the gate above) — this only
-    // covers the case where the row is measured but drawn invisible.
     if (native.hidden) native.hidden = NO;
     if (native.alpha < 0.01) native.alpha = 1.0;
-    return native.bounds.size.height > 1.0;
+    native.userInteractionEnabled = YES;
+    // Existence is now the whole test. It used to also require a non-zero height, i.e.
+    // that APPLE had laid the row out — which on the lock screen it never does, there
+    // being no slot for it, so the fallback engaged every single time and Apple's control
+    // was never actually tried. We size and place it ourselves now (NULayoutVolumeRow),
+    // exactly as we do our own strip, so a view Apple declined to lay out is still usable.
+    return YES;
+}
+
+// The scrubber's row, so the volume row can borrow its x and width and line up with it
+// instead of guessing at the platter's content insets. CGRectNull when unavailable.
+CGRect NUVolumeScrubberFrame(UIView *nowPlayingView) {
+    if (![nowPlayingView respondsToSelector:@selector(timeControlsView)]) return CGRectNull;
+    UIView *time = [(MRUNowPlayingView *)nowPlayingView timeControlsView];
+    if (!time || time.bounds.size.width < 1.0) return CGRectNull;
+    return time.frame;
 }
 
 // Consecutive layout passes in which the native row stayed unlaid-out. Three is
@@ -421,7 +434,7 @@ static const CGFloat kNUVolumeSwellDuration   = 0.30;
 static const CGFloat kNUVolumeSwellDamping    = 0.85;
 static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own volume step
 
-@interface NUVolumeTrackView : UIControl
+@interface NUVolumeTrackView : UIControl <UIGestureRecognizerDelegate>
 @property (nonatomic) float value;                        // 0…1
 @property (nonatomic, getter=isHeld) BOOL held;
 @end
@@ -448,6 +461,28 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
     _fill.backgroundColor = NUVolumeColor(0.95);
     _fill.userInteractionEnabled = NO;
     [_track addSubview:_fill];
+
+    // Driven by a gesture recognizer, NOT UIControl's own touch tracking, and this is
+    // the whole reason the scrubber works where this did not.
+    //
+    // UIControl tracking is view-level touch delivery: -touchesBegan: on the view. An
+    // ancestor recognizer with delaysTouchesBegan (the lock screen has several — paging,
+    // notification-list pan, the CoverSheet's own) withholds that delivery until it
+    // decides, and cancels it outright if it wins. Gesture recognizers are fed touches
+    // directly and are unaffected by another recognizer's delay. Apple's scrubber lives on
+    // recognizers, which is why a drag on it registers while an identical drag 40pt lower
+    // reached nothing at all — no begin, so no swell, so it read as a dead control.
+    //
+    // minimumPressDuration 0 makes this fire on touch-down like a slider rather than after
+    // a hold; allowableMovement is irrelevant at that duration but set wide so a drag that
+    // starts immediately is not read as a failed press.
+    UILongPressGestureRecognizer *press =
+        [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(nu_handlePress:)];
+    press.minimumPressDuration = 0.0;
+    press.allowableMovement = CGFLOAT_MAX;
+    press.cancelsTouchesInView = NO;
+    press.delegate = self;
+    [self addGestureRecognizer:press];
 
     self.isAccessibilityElement = YES;
     self.accessibilityTraits = UIAccessibilityTraitAdjustable;
@@ -500,27 +535,39 @@ static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own vol
 
 #pragma mark Tracking
 
-- (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
-    _touchStartX = [touch locationInView:self].x;
-    _valueAtTouchStart = self.value;
-    [self nu_setHeld:YES];
+- (void)nu_handlePress:(UILongPressGestureRecognizer *)press {
+    if (!self.enabled) return;
+    CGPoint p = [press locationInView:self];
+    switch (press.state) {
+        case UIGestureRecognizerStateBegan:
+            _touchStartX = p.x;
+            _valueAtTouchStart = self.value;
+            [self nu_setHeld:YES];
+            [self sendActionsForControlEvents:UIControlEventTouchDown];
+            break;
+        case UIGestureRecognizerStateChanged: {
+            CGFloat width = MAX(1.0, self.bounds.size.width);
+            self.value = _valueAtTouchStart + (float)((p.x - _touchStartX) / width);
+            [self sendActionsForControlEvents:UIControlEventValueChanged];
+            break;
+        }
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed:
+            [self nu_setHeld:NO];
+            [self sendActionsForControlEvents:UIControlEventTouchUpInside];
+            break;
+        default:
+            break;
+    }
+}
+
+// Never lose to somebody else's recognizer, and never make anyone else lose to this one:
+// the lock screen is thick with pans and swipes, and a volume drag has to coexist.
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr
+shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
     return YES;
 }
-
-- (BOOL)continueTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
-    CGFloat width = MAX(1.0, self.bounds.size.width);
-    CGFloat dx = [touch locationInView:self].x - _touchStartX;
-    self.value = _valueAtTouchStart + (float)(dx / width);
-    [self sendActionsForControlEvents:UIControlEventValueChanged];
-    return YES;
-}
-
-- (void)endTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
-    [self nu_setHeld:NO];
-    [self sendActionsForControlEvents:UIControlEventValueChanged];
-}
-
-- (void)cancelTrackingWithEvent:(UIEvent *)event { [self nu_setHeld:NO]; }
 
 #pragma mark Accessibility
 

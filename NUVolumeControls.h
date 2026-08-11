@@ -45,6 +45,10 @@ BOOL NUVolumeCustomPreferred(void);
 // therefore reserve the band ourselves in both modes and place the row into it.
 CGFloat NUVolumeStripHeight(void);
 
+// The platter's horizontal content inset, for placing a row when the scrubber's frame is
+// unavailable to borrow from.
+CGFloat NUVolumeHorizontalInset(void);
+
 // The control's own height within that band; the remainder is the platter's bottom
 // inset, which has to stay empty. Used to centre either slider in the band.
 CGFloat NUVolumeControlHeight(void);
@@ -62,8 +66,12 @@ void NUVolumeForceNativeGates(void);
 // vend one.
 UIView *NUVolumeNativeView(UIView *nowPlayingView);
 
-// Un-hide Apple's row. Returns YES once it is genuinely laid out (non-zero height),
-// which is the signal that the native path is working on this device.
+// The scrubber's row frame, so the volume row can borrow its x and width and align with
+// it. CGRectNull when this build does not vend one.
+CGRect NUVolumeScrubberFrame(UIView *nowPlayingView);
+
+// Un-hide Apple's row and make it interactive. Returns YES if there is one at all — we
+// size and place it ourselves, so it does not have to have been laid out by Apple.
 BOOL NUVolumeRevealNative(UIView *nowPlayingView);
 
 // Apple's row stayed empty for several layout passes: give up on it for this view and
