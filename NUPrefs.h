@@ -28,6 +28,7 @@
 #define kNUStateAppSpotify     (1ULL << 7)   // "enabledSpotify"
 #define kNUStateVolumeSlider   (1ULL << 8)   // "showVolumeSlider"
 #define kNUStateVolumeCustom   (1ULL << 9)   // "volumeSliderCustom"
+#define kNUStateSkipProviders  (1ULL << 10)  // "skipProviders" (diagnostic)
 
 // Known-keys mask: bit (n + 32) mirrors value bit n and means "the publishing Settings
 // build knew this key"; a value bit whose known bit is 0 falls back to CFPreferences.
@@ -45,6 +46,7 @@ static inline uint64_t NUStateBitForKey(NSString *key) {
     if ([key isEqualToString:@"showControlCenter"]) return kNUStateControlCenter;
     if ([key isEqualToString:@"showVolumeSlider"])  return kNUStateVolumeSlider;
     if ([key isEqualToString:@"volumeSliderCustom"]) return kNUStateVolumeCustom;
+    if ([key isEqualToString:@"skipProviders"])      return kNUStateSkipProviders;
     return 0;
 }
 

@@ -69,6 +69,10 @@
         // MT* provider in NUHooksPodcastProvider.
         BOOL runHere = NUIsMusic() || (NUIsPodcasts() && NUIOSMajor() >= 18);
         if (!runHere) return;
+        if (NUProvidersDisabled()) {
+            NULog("provider init skipped by the skipProviders preference");
+            return;
+        }
         %init(MusicProvider);
         [[NUMusicProvider shared] startServer];
         NULog("loaded MPC provider into %{public}@", NSBundle.mainBundle.bundleIdentifier);

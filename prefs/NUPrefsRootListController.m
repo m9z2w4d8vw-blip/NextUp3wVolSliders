@@ -242,6 +242,13 @@ static UIImage *NUAppIconImage(NSString *bundleID) {
         // the Apps group survives, but both are user-removable on iOS 14+, so handle it.
         for (NSInteger i = (NSInteger)kept.count - 1; i >= 0; i--) {
             if (((PSSpecifier *)kept[i]).cellType != PSGroupCell) continue;
+            // A group cell that exists purely to carry explanatory footer text under the
+            // LAST row is legitimate and must survive — it has no rows of its own by
+            // design. Only a header whose section was emptied by the filtering above is
+            // dangling, and that one is always followed by another group cell.
+            if (i == (NSInteger)kept.count - 1
+                && [(PSSpecifier *)kept[i] propertyForKey:@"footerText"]
+                && ![(PSSpecifier *)kept[i] name]) continue;
             BOOL hasRows = (i + 1 < (NSInteger)kept.count) &&
                            ((PSSpecifier *)kept[i + 1]).cellType != PSGroupCell;
             if (!hasRows) [kept removeObjectAtIndex:i];
@@ -311,14 +318,35 @@ static UIImage *NUAppIconImage(NSString *bundleID) {
 // their own sandboxes instead, which Preferences cannot read; their logs are reachable
 // only through Filza.
 static NSString * const kNULogDirectory = @"/var/mobile/nu";
-static const unsigned long long kNULogExportCap = 512 * 1024;   // keep the share sheet sane
+static const unsigned long long kNULogExportCap = 256 * 1024;   // keep the share sheet sane
+
+// NULogResolvePath falls back to NSTemporaryDirectory() wherever /var/mobile/nu is not
+// writable, which is every sandboxed process — the libSandy profile grants mach
+// extensions only, no file access. So look in the plausible fallbacks too, and say
+// which directories were searched so an empty result is not ambiguous.
+static NSArray<NSString *> *NULogSearchDirectories(void) {
+    return @[ kNULogDirectory, @"/var/tmp", @"/tmp", NSTemporaryDirectory() ?: @"/tmp" ];
+}
+
+// Crash reports. Collected automatically because the interesting ones belong to the
+// media apps, whose own logs are sealed inside their containers — the crash report is
+// the only view we get into a process that dies before it can write anything.
+static NSString * const kNUCrashDirectory = @"/var/mobile/Library/Logs/CrashReporter";
+static const NSInteger kNUCrashReportsToInclude = 4;
+static const NSInteger kNUCrashHeadLines = 90;   // exception type + termination reason + first frames
+
+static NSArray<NSString *> *NUCrashReportPrefixes(void) {
+    return @[ @"Music", @"Podcasts", @"Spotify", @"YouTubeMusic",
+              @"MediaRemoteUI", @"SpringBoard", @"Preferences" ];
+}
 
 // Every switch in the pane, so the export states what the tweak was actually
 // configured to do rather than making it a question in the bug report.
 static NSArray<NSString *> *NUAllPrefKeys(void) {
     return @[ @"Enabled", @"enabledMusic", @"enabledPodcasts", @"enabledYouTubeMusic",
               @"enabledSpotify", @"showLockScreen", @"showDynamicIsland",
-              @"showControlCenter", @"showVolumeSlider", @"volumeSliderCustom" ];
+              @"showControlCenter", @"showVolumeSlider", @"volumeSliderCustom",
+              @"skipProviders" ];
 }
 
 - (NSString *)_nuBuildLogReport {
@@ -337,41 +365,94 @@ static NSArray<NSString *> *NUAllPrefKeys(void) {
     for (NSString *key in NUAllPrefKeys()) {
         // Defaults here only matter for a key never written; the two volume keys
         // default off, everything else on — same as Root.plist.
-        BOOL def = ![key hasPrefix:@"showVolumeSlider"] && ![key hasPrefix:@"volumeSliderCustom"];
+        BOOL def = ![key isEqualToString:@"showVolumeSlider"]
+                && ![key isEqualToString:@"volumeSliderCustom"]
+                && ![key isEqualToString:@"skipProviders"];
         [out appendFormat:@"  %-22@ %@\n", key, NUPrefBool(key, def) ? @"on" : @"off"];
     }
     [out appendString:@"\n"];
 
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSArray<NSString *> *names = [[fm contentsOfDirectoryAtPath:kNULogDirectory error:NULL]
-                                  sortedArrayUsingSelector:@selector(compare:)];
-    NSArray<NSString *> *logs = [names filteredArrayUsingPredicate:
-                                 [NSPredicate predicateWithFormat:@"self ENDSWITH '.log'"]];
-    if (logs.count == 0) {
-        [out appendFormat:@"No logs found in %@.\n\n"
-             @"The file log only exists in a DEBUG build — the release (FINALPACKAGE) deb\n"
-             @"compiles NULog out entirely. Install the 1.0.1-1+debug deb, reproduce the\n"
-             @"problem, then export again.\n", kNULogDirectory];
-        return out;
+    NSInteger found = 0;
+    [out appendString:@"Searched for logs in:\n"];
+    for (NSString *dir in NULogSearchDirectories()) [out appendFormat:@"  %@\n", dir];
+    [out appendString:@"\n"];
+
+    for (NSString *dir in NULogSearchDirectories()) {
+        NSArray<NSString *> *names = [[fm contentsOfDirectoryAtPath:dir error:NULL]
+                                      sortedArrayUsingSelector:@selector(compare:)];
+        for (NSString *name in names) {
+            if (![name hasPrefix:@"nextup3-"] || ![name hasSuffix:@".log"]) continue;
+            NSString *path = [dir stringByAppendingPathComponent:name];
+            unsigned long long size = [[fm attributesOfItemAtPath:path error:NULL] fileSize];
+            [out appendFormat:@"===== %@ (%llu bytes) =====\n", path, size];
+            NSString *body = [NSString stringWithContentsOfFile:path
+                                                      encoding:NSUTF8StringEncoding error:NULL];
+            if (!body) { [out appendString:@"(unreadable)\n\n"]; continue; }
+            found++;
+            // Keep the tail: the interesting lines are the most recent ones.
+            if (body.length > kNULogExportCap) {
+                body = [@"...(truncated, showing the tail)...\n"
+                        stringByAppendingString:[body substringFromIndex:body.length - kNULogExportCap]];
+            }
+            [out appendString:body];
+            if (![body hasSuffix:@"\n"]) [out appendString:@"\n"];
+            [out appendString:@"\n"];
+        }
+    }
+    if (found == 0) {
+        [out appendString:@"No nextup3-*.log files were readable from Preferences.\n\n"
+             @"Two reasons this happens. The file log only exists in a DEBUG build —\n"
+             @"the release (FINALPACKAGE) deb compiles NULog out entirely. And the\n"
+             @"sandboxed processes (the media apps, and MediaRemoteUI, which draws the\n"
+             @"Lock Screen player) fall back to their own container's tmp, which\n"
+             @"Preferences cannot read; find those with a Filza search for nextup3-.\n\n"];
     }
 
-    for (NSString *name in logs) {
-        NSString *path = [kNULogDirectory stringByAppendingPathComponent:name];
-        unsigned long long size = [[fm attributesOfItemAtPath:path error:NULL] fileSize];
-        [out appendFormat:@"===== %@ (%llu bytes) =====\n", name, size];
+    [self _nuAppendCrashReports:out];
+    return out;
+}
+
+// Newest first, our processes only, header + first frames of each. That top section is
+// what distinguishes a load-time rejection (a CODESIGNING / DYLD termination reason,
+// with no frames of ours) from executing code that faulted (a real backtrace naming
+// NextUp3.dylib).
+- (void)_nuAppendCrashReports:(NSMutableString *)out {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray<NSString *> *names = [fm contentsOfDirectoryAtPath:kNUCrashDirectory error:NULL];
+    if (!names) {
+        [out appendFormat:@"\n===== crash reports =====\nCould not read %@.\n", kNUCrashDirectory];
+        return;
+    }
+
+    NSMutableArray<NSString *> *ours = [NSMutableArray array];
+    for (NSString *name in names) {
+        if (![name.pathExtension isEqualToString:@"ips"]) continue;
+        for (NSString *prefix in NUCrashReportPrefixes()) {
+            if ([name hasPrefix:prefix]) { [ours addObject:name]; break; }
+        }
+    }
+    // Filenames carry the timestamp, so a plain descending sort is newest-first.
+    [ours sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) { return [b compare:a]; }];
+
+    [out appendFormat:@"\n===== crash reports (%ld matching, newest %ld shown) =====\n",
+                      (long)ours.count, (long)MIN((NSInteger)ours.count, kNUCrashReportsToInclude)];
+    NSInteger shown = 0;
+    for (NSString *name in ours) {
+        if (shown >= kNUCrashReportsToInclude) break;
+        NSString *path = [kNUCrashDirectory stringByAppendingPathComponent:name];
         NSString *body = [NSString stringWithContentsOfFile:path
                                                   encoding:NSUTF8StringEncoding error:NULL];
-        if (!body) { [out appendString:@"(unreadable)\n\n"]; continue; }
-        // Keep the tail: the interesting lines are the most recent ones.
-        if (body.length > kNULogExportCap) {
-            body = [@"...(truncated, showing the tail)...\n"
-                    stringByAppendingString:[body substringFromIndex:body.length - kNULogExportCap]];
-        }
-        [out appendString:body];
-        if (![body hasSuffix:@"\n"]) [out appendString:@"\n"];
-        [out appendString:@"\n"];
+        if (!body) continue;
+        shown++;
+        [out appendFormat:@"\n----- %@ -----\n", name];
+        NSArray<NSString *> *lines = [body componentsSeparatedByString:@"\n"];
+        NSInteger limit = MIN((NSInteger)lines.count, kNUCrashHeadLines);
+        for (NSInteger i = 0; i < limit; i++) [out appendFormat:@"%@\n", lines[i]];
+        if ((NSInteger)lines.count > limit)
+            [out appendFormat:@"...(%ld more lines)...\n", (long)((NSInteger)lines.count - limit)];
     }
-    return out;
+    if (shown == 0) [out appendString:@"None found for our processes.\n"];
 }
 
 // Writes the combined report into Preferences' own tmp (always writable, no matter

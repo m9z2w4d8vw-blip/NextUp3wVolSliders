@@ -98,11 +98,13 @@ void NUPrefsPublishState(void) {
     // Both volume keys default OFF — the lock-screen volume row is opt-in.
     if (NUReadCF(@"showVolumeSlider",  NO,  YES))           mask |= kNUStateVolumeSlider;
     if (NUReadCF(@"volumeSliderCustom", NO, YES))           mask |= kNUStateVolumeCustom;
+    if (NUReadCF(@"skipProviders",      NO,  YES))          mask |= kNUStateSkipProviders;
     // Stamp every key this build knows into the known-keys mask (see kNUStateKnownShift in NUPrefs.h).
     mask |= (kNUStateMaster | kNUStateAppMusic | kNUStateAppPodcasts
              | kNUStateAppYouTubeMusic | kNUStateAppSpotify | kNUStateLockScreen
              | kNUStateDynamicIsland | kNUStateControlCenter
-             | kNUStateVolumeSlider | kNUStateVolumeCustom) << kNUStateKnownShift;
+             | kNUStateVolumeSlider | kNUStateVolumeCustom
+             | kNUStateSkipProviders) << kNUStateKnownShift;
 
     int t = NUStateToken();
     if (t != -1) notify_set_state(t, mask);

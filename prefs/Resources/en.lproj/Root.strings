@@ -14,6 +14,8 @@
 "Volume Slider" = "Volume Slider";
 "Use NextUp's Own Slider" = "Use NextUp's Own Slider";
 "Diagnostics" = "Diagnostics";
-"Collects the per-process logs into one text file and opens the share sheet, so it can be saved to Files or mailed. Requires the DEBUG build of the tweak — release builds compile logging out. Clear the log first, reproduce the problem, then export." = "Collects the per-process logs into one text file and opens the share sheet, so it can be saved to Files or mailed. Requires the DEBUG build of the tweak — release builds compile logging out. Clear the log first, reproduce the problem, then export.";
+"Collects the per-process logs and any recent crash reports into one text file and opens the share sheet, so it can be saved to Files or mailed. The logs need the DEBUG build of the tweak; crash reports are collected either way. Clear the log first, reproduce the problem, then export." = "Collects the per-process logs and any recent crash reports into one text file and opens the share sheet, so it can be saved to Files or mailed. The logs need the DEBUG build of the tweak; crash reports are collected either way. Clear the log first, reproduce the problem, then export.";
 "Export Debug Log" = "Export Debug Log";
 "Clear Debug Log" = "Clear Debug Log";
+"Skip Provider Init" = "Skip Provider Init";
+"Skip Provider Init leaves the tweak loaded but inert inside Music, Podcasts, YouTube Music and Spotify: no queue reading, no Up Next row. Turn it on if one of those apps crashes on launch — the app has to be relaunched for it to take effect. The Lock Screen volume slider is unaffected either way." = "Skip Provider Init leaves the tweak loaded but inert inside Music, Podcasts, YouTube Music and Spotify: no queue reading, no Up Next row. Turn it on if one of those apps crashes on launch — the app has to be relaunched for it to take effect. The Lock Screen volume slider is unaffected either way.";

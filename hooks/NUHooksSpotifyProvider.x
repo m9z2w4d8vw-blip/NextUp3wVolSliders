@@ -70,6 +70,10 @@
     @autoreleasepool {
         NUApplySandbox(); // grant shared mach service access (idempotent across ctors)
         if (!NUIsSpotify()) return;
+        if (NUProvidersDisabled()) {
+            NULog("provider init skipped by the skipProviders preference");
+            return;
+        }
         %init(SpotifyProvider);
         [[NUSpotifyProvider shared] startServer];
         NULog("loaded into Spotify (provider)");

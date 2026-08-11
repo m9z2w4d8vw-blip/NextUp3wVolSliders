@@ -166,7 +166,19 @@
 			<key>label</key>
 			<string>Diagnostics</string>
 			<key>footerText</key>
-			<string>Collects the per-process logs into one text file and opens the share sheet, so it can be saved to Files or mailed. Requires the DEBUG build of the tweak — release builds compile logging out. Clear the log first, reproduce the problem, then export.</string>
+			<string>Collects the per-process logs and any recent crash reports into one text file and opens the share sheet, so it can be saved to Files or mailed. The logs need the DEBUG build of the tweak; crash reports are collected either way. Clear the log first, reproduce the problem, then export.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>Skip Provider Init</string>
+			<key>key</key>
+			<string>skipProviders</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.yves.nextup3</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -183,6 +195,12 @@
 			<string>Clear Debug Log</string>
 			<key>action</key>
 			<string>clearLog:</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Skip Provider Init leaves the tweak loaded but inert inside Music, Podcasts, YouTube Music and Spotify: no queue reading, no Up Next row. Turn it on if one of those apps crashes on launch — the app has to be relaunched for it to take effect. The Lock Screen volume slider is unaffected either way.</string>
 		</dict>
 	</array>
 </dict>

@@ -74,6 +74,10 @@
         // NUHooksMusicProvider). Its MT* controllers are never instantiated here, and starting this
         // server too would collide with the MPC provider on the Podcasts LM service name.
         if (NUIOSMajor() >= 18) { NULog("Podcasts iOS>=18: MT* provider disabled (MPC path)"); return; }
+        if (NUProvidersDisabled()) {
+            NULog("provider init skipped by the skipProviders preference");
+            return;
+        }
         %init(PodcastProvider);
         [[NUPodcastProvider shared] startServer];
         NULog("loaded into Podcasts (provider)");

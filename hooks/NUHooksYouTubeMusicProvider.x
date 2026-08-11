@@ -102,6 +102,10 @@
     @autoreleasepool {
         NUApplySandbox(); // grant shared mach service access (idempotent across ctors)
         if (!NUIsYouTubeMusic()) return;
+        if (NUProvidersDisabled()) {
+            NULog("provider init skipped by the skipProviders preference");
+            return;
+        }
         %init(YouTubeMusicProvider);
         [[NUYouTubeMusicProvider shared] startServer];
         NULog("loaded into YouTube Music (provider)");

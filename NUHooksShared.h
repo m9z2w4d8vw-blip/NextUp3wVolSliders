@@ -55,6 +55,14 @@ static inline BOOL NUIsDisplaySide(void) {
     return !NUIsMusic() && !NUIsPodcasts() && !NUIsYouTubeMusic() && !NUIsSpotify();
 }
 
+// Diagnostic escape hatch: skip every provider's %init and mach server, leaving the
+// dylib loaded but inert inside the media apps. If an app crashes on launch WITH this
+// on, the crash is at dylib load or in Logos's hook installation, not in the provider
+// code — which is the one thing a crash report cannot tell us apart on its own. Also a
+// usable state: the display side (and so the volume row) is untouched by it.
+// Read in the provider %ctors, so it takes effect on the app's next launch.
+static inline BOOL NUProvidersDisabled(void) { return NUPrefBool(@"skipProviders", NO); }
+
 #pragma mark - Shared state (defined in NUHooksShared.m)
 
 // iOS 15 only: the exact PLPlatterView enclosing the in-process now-playing view.
