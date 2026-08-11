@@ -2,22 +2,73 @@
   <img src="assets/icon.png" width="120" alt="NextUp 3 icon">
 </p>
 
-<h1 align="center">NextUp 3</h1>
+<h1 align="center">NextUp 3 <sub><sup>+ Lock Screen volume slider</sup></sub></h1>
 
 <p align="center">
-  See and skip the upcoming track right from the Lock Screen, Control Center and Dynamic Island.
+  See and skip the upcoming track — and set the volume — right from the Lock Screen,
+  Control Center and Dynamic Island.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/iOS-14.2%20%E2%80%93%2026-blue" alt="iOS 14.2 – 26">
+  <img src="https://img.shields.io/badge/volume%20slider-iOS%2016%20%E2%80%93%2017-blueviolet" alt="volume slider: iOS 16 – 17">
   <img src="https://img.shields.io/badge/jailbreak-rootful%20%7C%20rootless%20%7C%20roothide-green" alt="rootful | rootless | roothide">
   <img src="https://img.shields.io/badge/license-GPL--3.0-orange" alt="GPL-3.0">
 </p>
+
+> **This is a fork of [Yves000/NextUp3](https://github.com/Yves000/NextUp3).** Everything
+> upstream does is unchanged; what this fork adds is a **working volume slider in the Lock
+> Screen now-playing player**, plus the build and portability fixes that were needed to
+> produce a usable `.deb` without a Mac. See [What this fork adds](#what-this-fork-adds).
 
 NextUp 3 is a modern revival of the classic
 [NextUp](https://github.com/Nosskirneh/NextUp) tweak (iOS 11 – 13). It adds
 an **Up Next row** to the system now-playing UI showing the next track with its
 artwork, so you always know what's coming and can act on it before it plays.
+
+## What this fork adds
+
+<p align="center">
+  <img src="assets/lock-screen-volume-detail.png" width="560" alt="Lock Screen player with the volume slider mid-drag, swelled and filled">
+  <br>
+  <sub>The volume row, caught mid-drag — swelled to 14pt, above the Up Next row.<br>
+  Full screenshot: <a href="assets/lock-screen-volume.png">assets/lock-screen-volume.png</a></sub>
+</p>
+
+**A volume slider in the Lock Screen player** (iOS 16 – 17). Apple lays a volume row out in
+Control Center on every supported version but never on the Lock Screen, so the platter there
+has transport controls and nothing to set the level with. This fork adds one: a capsule track
+that swells under your finger like the song-time scrubber, sitting between the transport
+controls and the Up Next row. One Settings switch turns it on. The
+[deep dive](#lock-screen-volume-row) covers how it works and why each part is shaped the way
+it is.
+
+**A CI build that works without a Mac** — `.github/workflows/build.yml` builds rootless
+`.deb`s on every push and attaches them to a GitHub Release. It runs on a **macOS** runner
+for the real `arm64 arm64e` package, because the Theos Linux toolchain cannot produce a
+loadable arm64e slice for this tweak; see
+[Building for arm64e off a Mac](#building-for-arm64e-off-a-mac) for the failure mode, which
+is a dylib that kills every process it is injected into.
+
+**Two portability fixes to upstream code**, both of which would be worth sending back:
+
+- **`%orig` with trailing code on the same line.** Upstream Theos's Logos drops everything
+  after the `%orig` substitution on that line — the rest of the statement *and* the closing
+  brace — so `- (void)m { …; %orig; [self x]; }` and `@try { %orig; }` both fail to compile,
+  the following method reading as a nested function definition. The roothide fork's Logos
+  does not have this bug, and since the Makefile's default target is roothide, upstream had
+  never been compiled with vanilla Theos. Five sites split onto their own lines
+  (`NUHooksControlCenter18.x`, `NUHooksNowPlaying.x`, `NUHooksDynamicIsland16/17.x`).
+- **The `-fno-ptrauth-objc-class-ro` probe was macOS-only-correct.** It ran `$(TARGET_CC)`
+  with no target triple, which on a Linux host tests the *build* machine, silently yields
+  nothing, and lets the arm64e signing through anyway. Now target-aware, and an unsupported
+  flag is a hard `$(error)` instead of a silent omission.
+
+**Diagnostics**, because a tweak whose UI lives in a sandboxed remote process is otherwise
+very hard to debug: Settings › Diagnostics gains **Export Debug Log** (per-process logs +
+recent crash reports + device/preference state → share sheet) and **Skip Provider Init** (a
+switch that leaves the tweak loaded but inert inside the media apps, to tell a load-time
+crash apart from a provider-code crash).
 
 ## Features
 
@@ -26,9 +77,9 @@ artwork, so you always know what's coming and can act on it before it plays.
 - **Skip ahead** — remove the upcoming track from the queue with one tap, or tap
   its artwork to play it right now.
 - **Bring back the previous track** — re-queue what just played as the next track.
-- **Volume slider on the Lock Screen** *(opt-in, iOS 16/17)* — Apple lays its own
-  volume row out in Control Center but only shows it on the Lock Screen while the
-  session is on AirPlay. Switch this on and it appears for local playback too.
+- **Volume slider on the Lock Screen** *(this fork; opt-in, iOS 16/17)* — hold and drag to
+  set the volume, with the same swell-under-the-finger behaviour as the song-time slider.
+  Colours are matched to the scrubber per appearance.
 - **Swipe gestures** — swipe the row for an interactive carousel: ← skips the
   next track, → puts the track you just heard back into the queue as up next,
   with neighbour artwork sliding in as you drag.
@@ -38,10 +89,12 @@ artwork, so you always know what's coming and can act on it before it plays.
 - **Per-app and per-surface toggles** — a Settings pane lets you enable/disable
   each app and each surface (Lock Screen / Control Center / Dynamic Island);
   changes apply instantly, no respring. The pane lists only what your device
-  has: apps that are actually installed, and the Dynamic Island row only where
-  there is an island (including one enabled by a tweak such as VisibleIsland).
+  has: apps that are actually installed, the Dynamic Island row only where
+  there is an island (including one enabled by a tweak such as VisibleIsland),
+  and the volume switch only on an iOS where it is implemented.
 - **Accessible & localized** — VoiceOver, Reduce Motion, Increase Contrast and
-  Dynamic Type support; 27 languages.
+  Dynamic Type support; 27 languages. The volume track is an adjustable element
+  reading a percentage and stepping by 1/16, like the hardware buttons.
 
 ## Supported apps
 
@@ -55,6 +108,12 @@ artwork, so you always know what's coming and can act on it before it plays.
 ## Compatibility
 
 **iOS 14.2 – 26**, on all jailbreak types (rootful, rootless, roothide).
+
+The **volume slider is iOS 16 – 17 only** — those are the versions whose Lock Screen player is
+the `MRUNowPlayingView` that Control Center shares. iOS 14/15 host that player in-process
+behind `CSMediaControlsViewController` and iOS 18 replaced it with `MRULockscreenView`; the
+Settings switch hides itself on both rather than offering a dead toggle. Verified on an
+iPhone 13 (iPhone14,5) running iOS 17.0 with rootless Dopamine.
 
 ## Screenshots
 
@@ -77,23 +136,45 @@ artwork, so you always know what's coming and can act on it before it plays.
   </tr>
 </table>
 
+<p align="center">
+  <img src="assets/lock-screen-volume.png" width="300" alt="Lock Screen with the volume slider being dragged">
+  <br><sub>Lock Screen volume slider, mid-drag (this fork)</sub>
+</p>
+
 ## Install
 
-- **[Havoc](https://havoc.app/package/nextup3)** (recommended) — search for
-  *NextUp 3* in your package manager.
-- Or grab the `.deb` from [Releases](https://github.com/Yves000/NextUp3/releases)
-  and install it with Sileo / Filza / `dpkg -i`.
+Grab a `.deb` from this fork's [Releases](../../releases) — every push builds one — and
+install it with Sileo / Filza / `dpkg -i`. Each release carries four packages; **the one you
+want is `…_iphoneos-arm64-xcode.deb`**:
+
+| deb | built with | use |
+| --- | --- | --- |
+| `com.yves.nextup3_<ver>_iphoneos-arm64-xcode.deb` | macOS runner, Apple clang, `arm64 arm64e` | **this one** |
+| `…-1+debug_iphoneos-arm64-xcode.deb` | same, with `NULog` compiled in | for reporting a problem |
+| `…_iphoneos-arm64-linux-arm64only.deb` | Ubuntu runner, `ARCHS=arm64` | fallback only |
+| `…-1+debug_iphoneos-arm64-linux-arm64only.deb` | same, debug | fallback only |
+
+All four are **rootless** (Dopamine, palera1n). The Linux-built pair exists because the Theos
+Linux toolchain cannot emit a loadable arm64e slice for this tweak — see
+[Building for arm64e off a Mac](#building-for-arm64e-off-a-mac) — so it is arm64-only, whose
+worst case is a dylib that never loads rather than one that crashes its host. For upstream's
+unmodified tweak, use **[Havoc](https://havoc.app/package/nextup3)** instead.
 
 Dependencies (installed automatically): `libSandy`, `PreferenceLoader`, and
 ElleKit or Substrate. The package restarts the media apps by itself; just
 respring when your package manager asks. Uninstalling cleans up everything the
-tweak wrote (settings and play history).
+tweak wrote (settings, play history, and the debug log directory).
+
+Then: **Settings › NextUp 3 › Volume › Volume Slider**. Off by default.
 
 ## Known issues
 
-- The Lock Screen volume slider is **not yet verified on-device**, and it is off by
-  default for that reason. See "Lock-screen volume row" below for what to expect and
-  what to send back if it doesn't show up.
+- **The system volume HUD appears while dragging the volume slider** — visible on the left
+  edge of the screenshot above. The level change is applied by SpringBoard (it is refused in
+  MediaRemoteUI, see the deep dive), and SpringBoard shows its own indicator for any change it
+  makes. An offscreen `MPVolumeView` is installed there to suppress it, which evidently is not
+  enough. Cosmetic, and the next thing to fix.
+- The volume slider is **iOS 16 – 17 only**, and verified on 17.0 specifically.
 - Apple Podcasts is not yet verified on iOS 26 (every other app and surface is).
 - Spotify and YouTube Music integrations are built against specific app versions
   (see table above); an app update can silently break them until the tweak is
@@ -133,9 +214,10 @@ instant.
 | `NUNextUpManager.{h,m}` | Display side: source tracking, per-source LightMessaging client, snapshot state |
 | `NUNextUpRowView.{h,m}` | The row UI: artwork, labels, skip button, swipe carousel |
 | `NUHooksShared.{h,m}` | Cross-hook helpers (process gates, view lookup, CC row layout) |
-| `NUShared.h` | IPC service names, Darwin notification names, `NUApplySandbox()` |
+| `NUShared.h` | IPC service names, Darwin notification names, `NUApplySandbox()`, and the three cross-process channels this fork adds: the volume-drag flag, the volume write request, and their staleness handling |
 | `NUPrefs.{h,m}` | Prefs: live state on a notify-state token, CFPreferences as persisted fallback |
-| `NUVolumeControls.{h,m}` | Lock-screen volume row: runtime discovery of MediaRemoteUI's volume-availability gates, `NUVolumeStripView` (our own slider, AVSystemController-backed), and the DEBUG probe |
+| `NUVolumeControls.{h,m}` | Lock-screen volume row: `NUVolumeStripView` (glyphs + `NUVolumeTrackView`, the capsule), the system-volume read/write chain, and the HUD suppressor |
+| `.github/workflows/build.yml` | CI: builds rootless debs on macOS (`arm64 arm64e`) and Ubuntu (`arm64`), asserts the ptrauth guard fired, publishes a Release |
 | `NUPrivate.h` | Private-API interface declarations (class-dump + Frida-verified) |
 | `NULocalization.h` / `NULogFile.m` | String lookup; DEBUG-only file log sink |
 | `prefs/` | PreferenceLoader settings pane + 27 localizations |
@@ -163,6 +245,31 @@ make package DEBUG=1                     # dev build with NULog logging
 # MediaRemoteUI. SpringBoard hosts hooks too, so finish with a respring:
 killall SpringBoard
 ```
+
+Two things about the Makefile that will bite otherwise:
+
+- **`ARCHS` has to be passed on the make COMMAND LINE, not the environment.** The variant
+  block assigns it with `export ARCHS := …`, and a command-line variable is the only kind that
+  overrides a makefile assignment.
+- **Whatever variant flags you pass to `make package`, pass to `make clean` too.** The whole
+  file is parsed on every invocation, so a bare `make clean` falls through to the default
+  branch, asks for the `roothide` package scheme, and vanilla Theos rejects it while still
+  parsing `common.mk` — before cleaning anything.
+
+### Continuous integration
+
+`.github/workflows/build.yml` builds on every push to `main` and publishes a Release tagged
+`v<version>-build.<run number>`, with the debs attached and the run's artifacts as a backup.
+It builds the same rootless package twice:
+
+| job | runner | `ARCHS` | why |
+| --- | --- | --- | --- |
+| `xcode-arm64e` | `macos-latest` | `arm64 arm64e` | Apple's clang accepts `-fno-ptrauth-objc-class-ro`, so the arm64e slice is loadable. This is the shipping deb. |
+| `linux-arm64` | `ubuntu-latest` | `arm64` | The Theos Linux toolchain has no such flag, so it cannot emit a usable arm64e slice. Fallback. |
+
+Both jobs `grep` the build output for `NextUp3: ptrauth-safe` and **refuse to publish**
+without it, because the alternative — a silently mis-compiled arm64e slice — kills every
+process the tweak is injected into.
 
 ## Lock-screen volume row
 
@@ -249,19 +356,38 @@ touch's x. Apple can afford jump-to-position on a scrubber, where a mistake cost
 place in a song; on volume a stray tap near the right edge would blast the output. Reduce
 Motion gates the swell, never the tracking.
 
-Scope is the lock screen on iOS 16 and 17 — the versions whose lock-screen player is the
-`MRUNowPlayingView` that Control Center shares. iOS 14/15 host it in-process behind
-`CSMediaControlsViewController` (different height levers, see `NUHooksLockScreen14/15`) and
-iOS 18 replaced it with `MRULockscreenView`, so the Settings row hides itself there rather
-than offering a dead toggle. Control Center and the Dynamic Island already have Apple's
+Scope is [as stated above](#compatibility) — iOS 16/17, lock screen only. `NUVolumeFeatureEnabled`
+gates on the version, `NUVolumeRowSupported()` in the prefs bundle hides the switch elsewhere,
+and the two must be kept in step. Control Center and the Dynamic Island already have Apple's
 slider and are untouched.
 
-Settings › Diagnostics has **Export Debug Log**, which collects `/var/mobile/nu/nextup3-*.log`
-plus any recent crash reports and the device/OS/preference state into one text file and
-opens the share sheet. Note that MediaRemoteUI — the process that draws the lock-screen
-player, and so the one whose log matters most here — still writes into its own container
-despite the libSandy read-write extension on that directory; its log is reachable only
-through Filza.
+## Diagnostics
+
+A tweak whose UI is drawn by a sandboxed remote process is hard to debug, so Settings ›
+Diagnostics has two things upstream does not:
+
+**Export Debug Log** collects `/var/mobile/nu/nextup3-*.log`, the newest crash reports for our
+six processes, and the device / OS / every-preference state into one text file, then opens the
+share sheet. The crash reports are the reason it exists: the media apps die before they can
+write a log of their own, and a crash report's header — `Exception Type`, `Termination Reason`,
+and whether any frame names `NextUp3.dylib` — distinguishes a load-time rejection from
+executing code that faulted. That is exactly how the arm64e bug was found. Logs require a
+`+debug` build; crash reports are collected from either.
+
+**Skip Provider Init** leaves the dylib loaded but returns from every provider `%ctor` before
+`%init` and the mach server. If an app crashes on launch *with this on*, nothing of ours ran
+and the fault is at dylib load; if it stops crashing, the fault is in provider code. Two
+failures that look identical from outside, told apart by one switch. It is also a livable
+state — the display side, and so the volume row, is untouched by it.
+
+**A gap worth knowing about:** MediaRemoteUI — the process that draws the Lock Screen player,
+and therefore the one whose log matters most for the volume row — still writes into its own
+container tmp, where Preferences cannot read it. A libSandy read-write extension on
+`/var/mobile/nu` was added for exactly this and did not take (`applyProfile` returns 0, so the
+profile is fine; the extension simply does not grant what that process needs). Its log is
+reachable only through a Filza search for `nextup3-`. Several of the bugs below took longer
+than they should have because of this, and the SpringBoard-side log lines exist partly to work
+around it.
 
 ## Building for arm64e off a Mac
 
@@ -320,10 +446,40 @@ The design is table-driven, so a new source stays localized:
    the app's signing identifier in `AllowedProcesses`), and `control`'s
    description.
 
+## Changes to upstream, file by file
+
+For anyone merging from or back into [Yves000/NextUp3](https://github.com/Yves000/NextUp3).
+Nothing upstream's features depend on was altered in behaviour; the two `%orig` and ptrauth
+items are portability fixes that upstream would want, and the rest is additive.
+
+| File | Change |
+| --- | --- |
+| `NUVolumeControls.{h,m}` | **New.** The whole volume row: `NUVolumeStripView`, `NUVolumeTrackView`, the read/write chain, the HUD suppressor. |
+| `.github/workflows/build.yml` | **New.** CI (see [above](#continuous-integration)). |
+| `Makefile` | Target-aware `-fno-ptrauth-objc-class-ro` probe that `$(error)`s rather than silently omitting the flag; `NUVolumeControls.m` added to `NextUp3_FILES`. |
+| `hooks/NUHooksNowPlaying.x` | Volume band reserved in `-sizeThatFits:`; the `-bounds` clamp now carries an *amount* (row + band) instead of a flag; `NULayoutVolumeRow`; packed show-state; `%orig` split onto its own line. |
+| `hooks/NUHooksSpringBoard.x` | Paging/scroll blocker extended to the volume band and to `touchesMoved`; yields outright while a volume drag is in progress; applies published volume writes. |
+| `hooks/NUHooksControlCenter18.x` | Two single-line hooked methods split across lines (the Logos `%orig` bug). |
+| `hooks/NUHooksDynamicIsland16.x`, `…17.x` | `@try { %orig; }` split across lines (same bug). |
+| `hooks/NUHooks*Provider.x` (×4) | `NUProvidersDisabled()` gate for **Skip Provider Init**. |
+| `NUHooksShared.{h,m}` | `NUViewShowsVolume`, `NUVolumeGrowthForView`, `NUFitGrowthForView`, `NUProvidersDisabled`; clamp-key semantics documented. |
+| `NUShared.h` | Cross-process channels: `NUVolumeTouchSet/Get` (drag in progress) and `NUVolumeRequestPublish/Read` (volume write), both with the timestamp/validity handling that keeps a dead setter from wedging state. |
+| `NUPrefs.{h,m}` | Two new state bits and keys: `showVolumeSlider`, `skipProviders`. |
+| `prefs/NUPrefsRootListController.m` | Log export, log clear, the `NUVolumeRowSupported()` row filter, and a fix so a trailing footer-only group survives specifier pruning. |
+| `prefs/Resources/Root.plist`, `en.lproj/*.strings` | Volume and Diagnostics groups; `AX_VOLUME`. Other 26 localizations fall back to English for the new strings. |
+| `layout/Library/libSandy/…plist` | Read-write file extension for `/var/mobile/nu` (does not appear to take effect — see [Diagnostics](#diagnostics)). |
+| `layout/DEBIAN/postinst`, `postrm` | Create and remove the log directory. |
+| `control` | Version `1.0.1`; description mentions the volume row. |
+| `AGENTS.md`, `CLAUDE.md` | `NUVolumeControls` added to the file map. |
+
 ## Credits
 
+- **[NextUp 3](https://github.com/Yves000/NextUp3)** by Yves — everything this fork is built
+  on. The volume row slots into machinery that was already there: the band is reserved with
+  the same levers as the Up Next row, and the cross-process drag flag is modelled on the one
+  the Dynamic Island swipe already used.
 - The original **[NextUp / NextUp 2](https://github.com/Nosskirneh/NextUp)**
-  (iOS 11 – 13) by Andreas Henriksson, which this tweak revives.
+  (iOS 11 – 13) by Andreas Henriksson, which that tweak revives.
 - [LightMessaging](https://github.com/rpetrich/LightMessaging) by Ryan Petrich.
 - [libSandy](https://github.com/opa334/libSandy) by opa334.
 
