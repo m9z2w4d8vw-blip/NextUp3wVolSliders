@@ -1,0 +1,73 @@
+# Builds NextUp 3 debs on a Linux runner — no Mac needed. Debs land under
+# Actions → this run → Artifacts.
+#
+# Two variants, matching the two bootstraps:
+#   rootless — vanilla Theos, package scheme `rootless`, iphoneos-arm64
+#   roothide — the roothide Theos FORK (the `roothide` scheme only exists there),
+#              iphoneos-arm64e. Marked experimental: a failure here still leaves
+#              the rootless artifact uploaded.
+#
+# Each variant produces two debs: a DEBUG build (NULog on, so NUVolumeProbeOnce
+# actually writes the volume-gate dump) and a FINALPACKAGE release build.
+name: Build deb
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.scheme }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scheme: rootless
+            flags: ROOTLESS=1
+            theos: https://github.com/theos/theos
+            experimental: false
+          - scheme: roothide
+            flags: ""
+            theos: https://github.com/roothide/theos
+            experimental: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Clones Theos, pulls the Linux toolchain and the theos/sdks tree, exports
+      # $THEOS. The SDK it lands is also what the prefs subproject links the
+      # private Preferences framework against — if that step complains, pin one
+      # with NUPREFS_PRIVATE_SDK=iPhoneOS16.5.sdk on the make lines below.
+      - name: Install Theos
+        uses: Randomblock1/theos-action@v1
+        with:
+          theos-src: ${{ matrix.theos }}
+
+      - name: Build (DEBUG — includes the volume probe)
+        run: |
+          set -euxo pipefail
+          mkdir -p out
+          make clean
+          make package ${{ matrix.flags }} DEBUG=1
+          for f in packages/*.deb; do
+            mv "$f" "out/$(basename "${f%.deb}")-debug.deb"
+          done
+
+      - name: Build (release)
+        run: |
+          set -euxo pipefail
+          make clean
+          make package ${{ matrix.flags }} FINALPACKAGE=1
+          mv packages/*.deb out/
+
+      - name: List what we built
+        run: ls -lh out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nextup3-${{ matrix.scheme }}
+          path: out/*.deb
+          if-no-files-found: error
