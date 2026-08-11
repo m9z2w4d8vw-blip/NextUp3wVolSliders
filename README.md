@@ -184,15 +184,25 @@ works is an on-device question:
   platter grows through Apple's own `-sizeThatFits:` and the existing height plumbing
   carries it across the process boundary for free.
 - **Custom** (`Use NextUp's Own Slider`, or automatic after the native row stays
-  unlaid-out for three layout passes): `NUVolumeStripView` — speaker glyph, slider,
-  speaker glyph, styled off the same adaptive foreground as the Up Next row — drawn
-  into a strip reserved exactly the way the row is (`NUVolumeGrowthForView` →
+  unlaid-out for three layout passes — which on the iOS 17 lock screen is what actually
+  happens, the layout having no slot for it): `NUVolumeStripView` — speaker glyph,
+  track, speaker glyph, styled off the same adaptive foreground as the Up Next row —
+  drawn into a band reserved exactly the way the row is (`NUVolumeGrowthForView` →
   `NUFitGrowthForView` → the `-bounds` clamp), directly above the row so the order
   reads like Apple's player. System volume goes through `AVSystemController`
   (`getVolume:forCategory:` / `setVolumeTo:forCategory:`, category `Audio`), and the
   strip subscribes to `AVSystemController_SystemVolumeDidChangeNotification` so it
   follows the hardware buttons. A throwaway `MPVolumeView` sits offscreen inside the
   strip purely to suppress SpringBoard's volume HUD.
+
+  The track is `NUVolumeTrackView`, a small `UIControl`, **not** a `UISlider`. Apple's
+  now-playing sliders are a rounded capsule with no thumb that swells under the finger
+  (7pt → 14pt, springing back on release), and a `UISlider` is a thin track plus a round
+  thumb by construction — no amount of tinting gets you there. Tracking is deliberately
+  **relative**: touching down does not jump the volume to the touch's x. Apple can afford
+  jump-to-position on a scrubber, where a mistake costs you your place in a song; on
+  volume a stray tap near the right edge would blast the output. Reduce Motion gates the
+  swell, never the tracking.
 
 Scope is **the lock screen on iOS 16 and 17** — the versions whose lock-screen player
 is the `MRUNowPlayingView` that Control Center shares. iOS 14/15 host it in-process

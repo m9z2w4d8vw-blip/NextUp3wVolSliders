@@ -15,7 +15,6 @@ static const CGFloat kNUVolumeHInset      = 14.0;   // iOS 16/17 lock-screen con
 static const CGFloat kNUVolumeGap         = 10.0;   // glyph → slider
 static const CGFloat kNUVolumeControlH    = 22.0;   // the slider's own band
 static const CGFloat kNUVolumeGlyphPoint  = 13.0;
-static const CGFloat kNUVolumeThumbSize   = 11.0;   // Apple's now-playing volume thumb, measured
 
 static NSInteger NUVolumeIOSMajor(void) {
     static NSInteger v = 0; static dispatch_once_t once;
@@ -354,12 +353,144 @@ static UIColor *NUVolumeColor(CGFloat alpha) {
 @property (nonatomic) BOOL showsRouteButton;
 @end
 
+#pragma mark The track
+
+// Apple's now-playing sliders — the scrubber and, in the AirPlay case, the volume row —
+// are not UISliders. They are a rounded capsule with no thumb, and they SWELL under the
+// finger: the bar roughly doubles in thickness while held, then springs back. A UISlider
+// cannot be made to look or behave like that (a thin track plus a round thumb is exactly
+// what it is), so this is a small UIControl that draws the capsule itself.
+//
+// Tracking is RELATIVE, not absolute: touching down does not jump the volume to the
+// touch's x. Apple can afford jump-to-position on a scrubber, where a mistake costs you
+// your place in a song; on volume a stray tap near the right edge would blast the
+// output. So the value follows how far the finger has MOVED from where it landed, which
+// is also the "hold, then adjust" gesture people expect here.
+static const CGFloat kNUVolumeTrackRestHeight = 7.0;    // measured off Apple's own bar
+static const CGFloat kNUVolumeTrackHeldHeight = 14.0;   // swelled, while held
+static const CGFloat kNUVolumeSwellDuration   = 0.30;
+static const CGFloat kNUVolumeSwellDamping    = 0.85;
+static const float   kNUVolumeAXStep          = 1.0f / 16.0f;   // iOS's own volume step
+
+@interface NUVolumeTrackView : UIControl
+@property (nonatomic) float value;                        // 0…1
+@property (nonatomic, getter=isHeld) BOOL held;
+@end
+
+@implementation NUVolumeTrackView {
+    UIView *_track;
+    UIView *_fill;
+    CGFloat _touchStartX;
+    float _valueAtTouchStart;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+    _value = 0.0f;
+
+    _track = [[UIView alloc] initWithFrame:CGRectZero];
+    _track.backgroundColor = NUVolumeColor(0.18);
+    _track.clipsToBounds = YES;                 // clips the fill's trailing cap
+    _track.userInteractionEnabled = NO;
+    [self addSubview:_track];
+
+    _fill = [[UIView alloc] initWithFrame:CGRectZero];
+    _fill.backgroundColor = NUVolumeColor(0.95);
+    _fill.userInteractionEnabled = NO;
+    [_track addSubview:_fill];
+
+    self.isAccessibilityElement = YES;
+    self.accessibilityTraits = UIAccessibilityTraitAdjustable;
+    self.accessibilityLabel = NULocalizedString(@"AX_VOLUME", @"Volume");
+    return self;
+}
+
+- (void)setValue:(float)value {
+    float clamped = MAX(0.0f, MIN(1.0f, value));
+    if (fabsf(clamped - _value) < 0.0005f) return;
+    _value = clamped;
+    [self setNeedsLayout];
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat h = self.held ? kNUVolumeTrackHeldHeight : kNUVolumeTrackRestHeight;
+    CGFloat w = self.bounds.size.width;
+    _track.frame = CGRectMake(0, (self.bounds.size.height - h) / 2.0, w, h);
+    _track.layer.cornerRadius = h / 2.0;
+    _track.layer.cornerCurve = kCACornerCurveContinuous;
+    _fill.frame = CGRectMake(0, 0, w * self.value, h);
+    _fill.layer.cornerRadius = h / 2.0;
+    _fill.layer.cornerCurve = kCACornerCurveContinuous;
+}
+
+// Reduce Motion gates the swell (autonomous motion); the finger-tracking itself is
+// direct manipulation and always stays live — same rule NUNextUpRowView follows.
+- (void)nu_setHeld:(BOOL)held {
+    if (self.held == held) return;
+    self.held = held;
+    [self setNeedsLayout];
+    if (UIAccessibilityIsReduceMotionEnabled()) { [self layoutIfNeeded]; return; }
+    [UIView animateWithDuration:kNUVolumeSwellDuration
+                          delay:0
+         usingSpringWithDamping:kNUVolumeSwellDamping
+          initialSpringVelocity:0
+                        options:UIViewAnimationOptionAllowUserInteraction |
+                                UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{ [self layoutIfNeeded]; }
+                     completion:nil];
+}
+
+#pragma mark Tracking
+
+- (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    _touchStartX = [touch locationInView:self].x;
+    _valueAtTouchStart = self.value;
+    [self nu_setHeld:YES];
+    return YES;
+}
+
+- (BOOL)continueTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    CGFloat width = MAX(1.0, self.bounds.size.width);
+    CGFloat dx = [touch locationInView:self].x - _touchStartX;
+    self.value = _valueAtTouchStart + (float)(dx / width);
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+    return YES;
+}
+
+- (void)endTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    [self nu_setHeld:NO];
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+}
+
+- (void)cancelTrackingWithEvent:(UIEvent *)event { [self nu_setHeld:NO]; }
+
+#pragma mark Accessibility
+
+- (NSString *)accessibilityValue {
+    return [NSString stringWithFormat:@"%d%%", (int)lroundf(self.value * 100.0f)];
+}
+
+- (void)accessibilityIncrement {
+    self.value = self.value + kNUVolumeAXStep;
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+}
+
+- (void)accessibilityDecrement {
+    self.value = self.value - kNUVolumeAXStep;
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+}
+
+@end
+
+#pragma mark The strip
+
 @interface NUVolumeStripView ()
 @property (nonatomic, strong) UIImageView *lowGlyph;
 @property (nonatomic, strong) UIImageView *highGlyph;
-@property (nonatomic, strong) UISlider *slider;
+@property (nonatomic, strong) NUVolumeTrackView *track;
 @property (nonatomic, assign) BOOL dragging;
-@property (nonatomic, assign) UIUserInterfaceStyle thumbStyle;
 @end
 
 @implementation NUVolumeStripView
@@ -379,24 +510,19 @@ static UIColor *NUVolumeColor(CGFloat alpha) {
     [self addSubview:_lowGlyph];
     [self addSubview:_highGlyph];
 
-    _slider = [[UISlider alloc] initWithFrame:CGRectZero];
-    _slider.minimumValue = 0.0;
-    _slider.maximumValue = 1.0;
-    _slider.continuous = YES;
-    _slider.maximumTrackTintColor = NUVolumeColor(0.18);
-    _slider.minimumTrackTintColor = NUVolumeColor(0.9);
-    _slider.accessibilityLabel = NULocalizedString(@"AX_VOLUME", @"Volume");
-    [_slider addTarget:self action:@selector(nu_sliderChanged:) forControlEvents:UIControlEventValueChanged];
-    [_slider addTarget:self action:@selector(nu_sliderDown:)
-      forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
-    [_slider addTarget:self action:@selector(nu_sliderUp:)
-      forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
-    [self addSubview:_slider];
+    _track = [[NUVolumeTrackView alloc] initWithFrame:CGRectZero];
+    [_track addTarget:self action:@selector(nu_trackChanged:)
+     forControlEvents:UIControlEventValueChanged];
+    [_track addTarget:self action:@selector(nu_trackDown:) forControlEvents:UIControlEventTouchDown];
+    [_track addTarget:self action:@selector(nu_trackUp:)
+     forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
+                      UIControlEventTouchCancel];
+    [self addSubview:_track];
 
     if (!NUVolumeSystemIsWritable()) {
-        // Read-only: leave the slider visible (it still reflects the hardware buttons)
-        // but don't pretend it can be dragged.
-        _slider.enabled = NO;
+        // Read-only: leave it visible (it still reflects the hardware buttons) but don't
+        // pretend it can be dragged.
+        _track.enabled = NO;
         NULog("volume: system volume not writable in %{public}@ — strip is display-only",
               NSProcessInfo.processInfo.processName);
     }
@@ -423,11 +549,11 @@ static UIColor *NUVolumeColor(CGFloat alpha) {
     return view;
 }
 
-// A volume change we make ourselves still raises SpringBoard's volume HUD, which on
-// the lock screen lands right on top of the platter. An MPVolumeView in the window is
-// the long-standing way to tell the system a slider is already on screen. Resolved by
-// name so MediaPlayer is not linked, and entirely optional — if it misbehaves on some
-// build, deleting this method only brings the HUD back.
+// A volume change we make ourselves still raises SpringBoard's volume HUD, which on the
+// lock screen lands right on top of the platter. An MPVolumeView in the window is the
+// long-standing way to tell the system a slider is already on screen. Resolved by name so
+// MediaPlayer is not linked, and entirely optional — if it misbehaves on some build,
+// deleting this method only brings the HUD back.
 - (void)nu_installHUDSuppressor {
     Class MPV = NSClassFromString(@"MPVolumeView");
     if (!MPV) return;
@@ -444,59 +570,51 @@ static UIColor *NUVolumeColor(CGFloat alpha) {
 
 - (void)refreshFromSystem {
     if (self.dragging) return;
-    float v = NUVolumeSystemGet();
-    if (fabsf(self.slider.value - v) > 0.001f) self.slider.value = v;
+    self.track.value = NUVolumeSystemGet();
 }
 
 - (void)nu_systemVolumeChanged:(NSNotification *)note {
     NSString *category = note.userInfo[kNUVolumeCategoryKey];
     if (category && ![category isEqualToString:kNUVolumeCategory]) return;  // ringer, not media
-    NSNumber *value = note.userInfo[kNUVolumeParamKey];
     if (self.dragging) return;
-    if (value) self.slider.value = value.floatValue;
+    NSNumber *value = note.userInfo[kNUVolumeParamKey];
+    if (value) self.track.value = value.floatValue;
     else [self refreshFromSystem];
 }
 
-- (void)nu_sliderChanged:(UISlider *)slider {
-    NUVolumeSystemSet(slider.value);
-    NULog("volume strip: slider -> %.3f (system now %.3f)", slider.value, NUVolumeSystemGet());
+- (void)nu_trackChanged:(NUVolumeTrackView *)track {
+    NUVolumeSystemSet(track.value);
+    NULog("volume strip: track -> %.3f (system now %.3f)", track.value, NUVolumeSystemGet());
 }
 
-- (void)nu_sliderDown:(UISlider *)slider {
+- (void)nu_trackDown:(NUVolumeTrackView *)track {
     self.dragging = YES;
-    NULog("volume strip: slider touch down, value %.3f", slider.value);
+    NULog("volume strip: touch down, value %.3f", track.value);
 }
 
-- (void)nu_sliderUp:(UISlider *)slider {
+- (void)nu_trackUp:(NUVolumeTrackView *)track {
     self.dragging = NO;
-    NUVolumeSystemSet(slider.value);
-    NULog("volume strip: slider released at %.3f", slider.value);
+    NULog("volume strip: released at %.3f", track.value);
 }
 
 #pragma mark Touch instrumentation
 
-// "The slider is there but I can't drag it" has two very different causes — the
-// touch never arrives (something above us is eating it, or the platter's remote
-// scene isn't forwarding), or it arrives and the write is refused. These three
-// lines tell the two apart in the log rather than by guesswork.
+// "The slider is there but I can't drag it" has two very different causes — the touch
+// never arrives (something above is eating it, or the platter's remote scene isn't
+// forwarding), or it arrives and the write is refused. These lines tell the two apart in
+// the log rather than by guesswork.
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit = [super hitTest:point withEvent:event];
-    NULog("volume strip: hitTest %{public}@ -> %{public}@ (sliderEnabled=%d)",
+    NULog("volume strip: hitTest %{public}@ -> %{public}@ (trackEnabled=%d)",
           NSStringFromCGPoint(point),
-          hit ? NSStringFromClass(hit.class) : @"(nil)", self.slider.enabled);
+          hit ? NSStringFromClass(hit.class) : @"(nil)", self.track.enabled);
     return hit;
-}
-
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    NULog("volume strip: touchesBegan on the strip itself (not the slider)");
-    [super touchesBegan:touches withEvent:event];
 }
 
 #pragma mark Layout
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    [self nu_updateThumbIfNeeded];
 
     // The control band is the TOP kNUVolumeControlH points; the rest of the strip is the
     // platter's own bottom inset, which has to stay empty because Apple's copy of it is
@@ -509,27 +627,9 @@ static UIColor *NUVolumeColor(CGFloat alpha) {
     self.highGlyph.frame = CGRectMake(w - kNUVolumeHInset - highSize.width, 0,
                                       highSize.width, kNUVolumeControlH);
 
-    CGFloat sliderX = CGRectGetMaxX(self.lowGlyph.frame) + kNUVolumeGap;
-    CGFloat sliderW = CGRectGetMinX(self.highGlyph.frame) - kNUVolumeGap - sliderX;
-    self.slider.frame = CGRectMake(sliderX, 0, MAX(1.0, sliderW), kNUVolumeControlH);
-}
-
-// The thumb is an image, so it can't be a dynamic colour — redraw it whenever the
-// resolved light/dark style changes (a trait change re-runs -layoutSubviews).
-- (void)nu_updateThumbIfNeeded {
-    UIUserInterfaceStyle style = self.traitCollection.userInterfaceStyle;
-    if (self.slider.currentThumbImage && self.thumbStyle == style) return;
-    self.thumbStyle = style;
-    UIColor *fill = [NUVolumeColor(0.95) resolvedColorWithTraitCollection:self.traitCollection];
-    CGFloat d = kNUVolumeThumbSize;
-    UIGraphicsImageRenderer *renderer =
-        [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(d, d)];
-    UIImage *thumb = [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-        [fill setFill];
-        [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, d, d)] fill];
-    }];
-    [self.slider setThumbImage:thumb forState:UIControlStateNormal];
-    [self.slider setThumbImage:thumb forState:UIControlStateHighlighted];
+    CGFloat trackX = CGRectGetMaxX(self.lowGlyph.frame) + kNUVolumeGap;
+    CGFloat trackW = CGRectGetMinX(self.highGlyph.frame) - kNUVolumeGap - trackX;
+    self.track.frame = CGRectMake(trackX, 0, MAX(1.0, trackW), kNUVolumeControlH);
 }
 
 @end
