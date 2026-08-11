@@ -189,10 +189,19 @@ the volume, draws the HUD, and can always write, and the tweak is already inject
 the row publishes a target level over a notify-state channel (`NUVolumeRequestPublish` in
 NUShared.h) and `NUHooksSpringBoard` applies it. Throttled to 50ms during a drag, with the
 final value always sent on release so letting go between ticks does not leave the level a
-few percent short. The local chain — `-setVolumeTo:forCategory:`, then
-`-setActiveCategoryVolumeTo:`, then the `MPVolumeSlider` inside the offscreen `MPVolumeView`
-that is there anyway for HUD suppression — is still attempted, since a double write of one
-level is harmless and it costs nothing to let whichever side works, work.
+few percent short. The local write is still attempted too, since a double write of one level
+is harmless and it costs nothing to let whichever side works, work.
+
+**iOS keeps a separate level per audio category, and success is a read-back, not a return
+value.** Both halves of that sentence were bugs. `-setVolumeTo:forCategory:@"Audio"` returns
+YES, SpringBoard logged `applied 0.765 via setVolumeTo:forCategory:`, and the output did not
+move — because media playback is not on that category. `"Audio"` is the legacy name and the
+media one is `"Audio/Video"`, but rather than trust either string `NUVolumeApplyLocally` asks
+`-getActiveCategoryVolume:andName:` which category is active (by definition the audible one)
+and works down a list from there. And every attempt is verified by re-reading the level
+afterwards, with a 1/16-step tolerance, so a selector that answers YES and does nothing no
+longer terminates the chain. Reads take the same route, so the level the row displays is the
+level you can hear.
 
 Colours are **copied from the scrubber** rather than approximated: `NUVolumeCopyScrubberColors`
 walks `timeControlsView` for the widest bar-shaped view with a real background colour (the

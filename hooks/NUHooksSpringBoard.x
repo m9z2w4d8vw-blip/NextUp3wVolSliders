@@ -192,11 +192,16 @@ static BOOL NUShouldBlockApertureSwipe(void) {
             // as the volume changes.
             NUVolumeInstallHUDSuppressor(UIApplication.sharedApplication.windows.firstObject);
             NSString *path = NUVolumeApplyLocally(target);
+            // Log the read-back, not just the path. The previous version reported
+            // "applied 0.765 via setVolumeTo:forCategory:" while the output never moved,
+            // because the selector returned YES for a category nothing was playing on —
+            // so the line now has to show the level actually landing.
             static NSString *lastPath = nil;
             if (![path isEqualToString:lastPath]) {
                 lastPath = path;
-                NULog("volume: SpringBoard applied %.3f via %{public}@", target,
-                      path ?: @"NOTHING — no write path in SpringBoard either");
+                NULog("volume: SpringBoard target %.3f -> level %.3f via %{public}@",
+                      target, NUVolumeSystemLevel(),
+                      path ?: @"NOTHING — every write path left the level unchanged");
             }
         });
 

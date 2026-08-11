@@ -42,6 +42,7 @@ CGFloat NUVolumeHorizontalInset(void) { return kNUVolumeHInset; }
 @interface NUAVSystemController : NSObject
 + (id)sharedAVSystemController;
 - (BOOL)getVolume:(float *)outVolume forCategory:(NSString *)category;
+- (BOOL)getActiveCategoryVolume:(float *)outVolume andName:(NSString **)outName;
 - (BOOL)setVolumeTo:(float)volume forCategory:(NSString *)category;
 - (BOOL)setActiveCategoryVolumeTo:(float)volume;
 - (BOOL)setAttribute:(id)attribute forKey:(NSString *)key;
@@ -66,13 +67,20 @@ CGFloat NUVolumeHorizontalInset(void) { return kNUVolumeHInset; }
 // that last-resort write path. Weak — the strip owns it.
 static __weak UIView *gNUHUDSuppressor = nil;
 
-static NSString * const kNUVolumeCategory = @"Audio";   // media playback volume
+// iOS keeps a SEPARATE level per audio category, and this was the bug behind a slider that
+// looked like it worked and changed nothing: -setVolumeTo:forCategory:@"Audio" happily
+// returns YES, SpringBoard logged the write as successful, and the output never moved,
+// because media playback is not on that category. "Audio" is the legacy name; the media one
+// on modern iOS is "Audio/Video". Rather than trust either string, ask which category is
+// active — by definition it is the one you can hear — and fall back only if it won't say.
+static NSString * const kNUVolumeCategory = @"Audio/Video";
+static NSString * const kNUVolumeLegacyCategory = @"Audio";
+
+// How close a read-back has to be to count as applied. The system quantises to 1/16 steps,
+// so a write of 0.765 legitimately reads back as 0.75.
+static const float kNUVolumeAppliedTolerance = 0.09f;
 static NSString * const kNUVolumeChangedNotification =
     @"AVSystemController_SystemVolumeDidChangeNotification";
-static NSString * const kNUVolumeParamKey =
-    @"AVSystemController_AudioVolumeNotificationParameter";
-static NSString * const kNUVolumeCategoryKey =
-    @"AVSystemController_AudioCategoryNotificationParameter";
 
 // Typed rather than `id` so the compiler resolves these selectors against OUR
 // declaration only — several frameworks in these processes declare a
@@ -98,12 +106,30 @@ static NUAVSystemController *NUVolumeSystemController(void) {
     return controller;
 }
 
+// The category the audible output is on right now, or nil if the controller won't say.
+static NSString *NUVolumeActiveCategory(void) {
+    NUAVSystemController *sc = NUVolumeSystemController();
+    if (![sc respondsToSelector:@selector(getActiveCategoryVolume:andName:)]) return nil;
+    float v = 0.0f;
+    NSString *name = nil;
+    if (![sc getActiveCategoryVolume:&v andName:&name]) return nil;
+    return name.length ? name : nil;
+}
+
+// The audible level. Asks for the ACTIVE category's level first, so what the row displays is
+// what you can hear rather than whatever a hardcoded category happens to hold.
 static float NUVolumeSystemGet(void) {
     NUAVSystemController *sc = NUVolumeSystemController();
-    if (![sc respondsToSelector:@selector(getVolume:forCategory:)]) return 0.0f;
     float v = 0.0f;
-    if (![sc getVolume:&v forCategory:kNUVolumeCategory]) return 0.0f;
-    return MAX(0.0f, MIN(1.0f, v));
+    if ([sc respondsToSelector:@selector(getActiveCategoryVolume:andName:)]) {
+        NSString *name = nil;
+        if ([sc getActiveCategoryVolume:&v andName:&name]) return MAX(0.0f, MIN(1.0f, v));
+    }
+    if (![sc respondsToSelector:@selector(getVolume:forCategory:)]) return 0.0f;
+    for (NSString *category in @[ kNUVolumeCategory, kNUVolumeLegacyCategory ]) {
+        if ([sc getVolume:&v forCategory:category]) return MAX(0.0f, MIN(1.0f, v));
+    }
+    return 0.0f;
 }
 
 // Walk the offscreen MPVolumeView for its MPVolumeSlider and drive that.
@@ -130,14 +156,35 @@ static BOOL NUVolumeSetViaMPVolumeSlider(float volume) {
 
 // Which of the write paths actually took the value. Logged once so a device where none of
 // them work says so plainly instead of presenting a slider that silently does nothing.
+// Success is a read-back, not a return value. Every one of these can answer YES and change
+// nothing audible — which is exactly what happened — so each attempt is checked against the
+// level afterwards and the chain continues until the output has actually moved.
+static BOOL NUVolumeApplied(float target) {
+    return fabsf(NUVolumeSystemGet() - target) <= kNUVolumeAppliedTolerance;
+}
+
 NSString *NUVolumeApplyLocally(float volume) {
     float v = MAX(0.0f, MIN(1.0f, volume));
     NUAVSystemController *sc = NUVolumeSystemController();
-    if ([sc respondsToSelector:@selector(setVolumeTo:forCategory:)]
-        && [sc setVolumeTo:v forCategory:kNUVolumeCategory]) return @"setVolumeTo:forCategory:";
-    if ([sc respondsToSelector:@selector(setActiveCategoryVolumeTo:)]
-        && [sc setActiveCategoryVolumeTo:v]) return @"setActiveCategoryVolumeTo:";
-    if (NUVolumeSetViaMPVolumeSlider(v)) return @"MPVolumeSlider";
+
+    // Active category first: it is the one you can hear, by definition.
+    if ([sc respondsToSelector:@selector(setActiveCategoryVolumeTo:)]) {
+        [sc setActiveCategoryVolumeTo:v];
+        if (NUVolumeApplied(v)) return @"setActiveCategoryVolumeTo:";
+    }
+    if ([sc respondsToSelector:@selector(setVolumeTo:forCategory:)]) {
+        NSString *active = NUVolumeActiveCategory();
+        NSMutableArray<NSString *> *categories = [NSMutableArray array];
+        if (active) [categories addObject:active];
+        [categories addObject:kNUVolumeCategory];
+        [categories addObject:kNUVolumeLegacyCategory];
+        for (NSString *category in categories) {
+            [sc setVolumeTo:v forCategory:category];
+            if (NUVolumeApplied(v))
+                return [@"setVolumeTo:forCategory: " stringByAppendingString:category];
+        }
+    }
+    if (NUVolumeSetViaMPVolumeSlider(v) && NUVolumeApplied(v)) return @"MPVolumeSlider";
     return nil;
 }
 
@@ -506,12 +553,11 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
 }
 
 - (void)nu_systemVolumeChanged:(NSNotification *)note {
-    NSString *category = note.userInfo[kNUVolumeCategoryKey];
-    if (category && ![category isEqualToString:kNUVolumeCategory]) return;  // ringer, not media
     if (self.dragging) return;
-    NSNumber *value = note.userInfo[kNUVolumeParamKey];
-    if (value) self.track.value = value.floatValue;
-    else [self refreshFromSystem];
+    // No category filter: this used to drop anything not tagged "Audio", which silently
+    // ignored the media category under its real name. Re-reading the active level is both
+    // simpler and correct — a ringer change reads back the same media level and is a no-op.
+    [self refreshFromSystem];
 }
 
 - (void)nu_trackChanged:(NUVolumeTrackView *)track {
