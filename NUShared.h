@@ -112,6 +112,34 @@ static inline uint64_t NUDITouchGet(void) {
     return 1;
 }
 
+// Cross-process "a volume drag is in progress" flag, read synchronously by SpringBoard's
+// gesture blockers so lock-screen paging and the notification-list scroll are failed for
+// the duration. Without it a drag that strays off the platter is handed to whichever
+// system gesture claims it next, and the volume stops following the finger mid-adjust.
+//
+// Same shape as kNUDITouchNotify above, including the timestamp rather than a bare 1: the
+// state lives in notifyd and outlives the setter, so a process that dies mid-drag would
+// otherwise leave lock-screen paging broken until reboot.
+#define kNUVolumeTouchNotify "com.yves.nextup3.voltouch"
+
+static inline void NUVolumeTouchSet(uint64_t on) {
+    static int token = -1;
+    if (token == -1 && notify_register_check(kNUVolumeTouchNotify, &token) != NOTIFY_STATUS_OK) { token = -1; return; }
+    notify_set_state(token, on ? (uint64_t)time(NULL) : 0);
+    notify_post(kNUVolumeTouchNotify);
+}
+
+static inline uint64_t NUVolumeTouchGet(void) {
+    static int token = -1;
+    if (token == -1 && notify_register_check(kNUVolumeTouchNotify, &token) != NOTIFY_STATUS_OK) { token = -1; return 0; }
+    uint64_t v = 0;
+    notify_get_state(token, &v);
+    if (v == 0) return 0;
+    time_t now = time(NULL);
+    if (now < (time_t)v || now - (time_t)v > kNUDITouchMaxAge) return 0;  // stale — setter died mid-drag
+    return 1;
+}
+
 // Cross-process media-suggestions flag — iOS 18 lock screen ONLY. Every other surface
 // reads the player view's own -showSuggestionsView directly (see NUViewShowsSuggestions in
 // NUHooksShared.h); this exists because on iOS 18 the lock-screen player is a remote

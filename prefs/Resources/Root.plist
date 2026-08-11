@@ -133,7 +133,7 @@
 			<key>label</key>
 			<string>Volume</string>
 			<key>footerText</key>
-			<string>Adds the volume slider to the Lock Screen player, the one Control Center already has. Apple only lays it out there while the session is on AirPlay; this unhides it for local playback too. If it stays missing, switch on the tweak's own slider below.</string>
+			<string>Adds the volume slider to the Lock Screen player, the one Control Center already has. Hold it to adjust, the same way the time slider works. Lock Screen only, on iOS 16 and 17.</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -147,19 +147,6 @@
 			<key>defaults</key>
 			<string>com.yves.nextup3</string>
 		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>label</key>
-			<string>Use NextUp's Own Slider</string>
-			<key>key</key>
-			<string>volumeSliderCustom</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.yves.nextup3</string>
-		</dict>
-
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>

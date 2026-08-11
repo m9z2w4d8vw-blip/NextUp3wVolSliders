@@ -8,14 +8,10 @@
 // it was measured at. Used to skip the forced relayout entirely when the platter
 // already reflects reality — see -nu_syncPlatterHeight.
 //
-// The show-state is a bitmask, not a bool, because two independent things now change
-// the platter's height: bit 0 the Up Next row, bit 1 the lock-screen volume row, bit 2
-// whether that volume row is OURS (Apple's own row grows the platter through Apple's
-// -sizeThatFits:, ours through the strip we reserve — so switching between them
-// changes the measurement even though the row is showing either way).
+// The show-state is a bitmask, not a bool, because two independent things change the
+// platter's height: bit 0 the Up Next row, bit 1 the lock-screen volume row.
 #define NU_STATE_ROW    1
 #define NU_STATE_VOLUME 2
-#define NU_STATE_VOLUME_CUSTOM 4
 static void * const kNUPushedShowKey  = (void *)&kNUPushedShowKey;
 static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
 
@@ -24,15 +20,10 @@ static void * const kNUPushedWidthKey = (void *)&kNUPushedWidthKey;
 static void * const kNUVolumeLogKey = (void *)&kNUVolumeLogKey;
 static void * const kNUVolumeHitLogKey = (void *)&kNUVolumeHitLogKey;
 
-static void NULogVolumeLayout(UIView *npView, BOOL custom, CGFloat reserved, UIView *strip) {
-    UIView *native = NUVolumeNativeView(npView);
+static void NULogVolumeLayout(UIView *npView, CGFloat reserved, UIView *strip) {
     NSString *line = [NSString stringWithFormat:
-        @"volume layout: mode=%@ platterH=%.1f reserved=%.1f native=%@ nativeFrame=%@ "
-        @"strip=%@ stripFrame=%@ writable=%d level=%.2f",
-        custom ? @"custom" : @"native",
+        @"volume layout: platterH=%.1f reserved=%.1f strip=%@ stripFrame=%@ writable=%d level=%.2f",
         npView.bounds.size.height, reserved,
-        native ? NSStringFromClass(native.class) : @"(none)",
-        native ? NSStringFromCGRect(native.frame) : @"-",
         strip ? (strip.hidden ? @"hidden" : @"visible") : @"(none)",
         strip ? NSStringFromCGRect(strip.frame) : @"-",
         NUVolumeSystemIsWritable(), NUVolumeSystemLevel()];
@@ -52,27 +43,19 @@ static MRUNowPlayingViewController *NUOwningNowPlayingVC(UIView *view) {
 
 // The packed show-state for a player view (see the bit definitions above).
 static NSInteger NUPlayerShowState(UIView *npView, BOOL row) {
-    BOOL volume = NUViewShowsVolume(npView);
     NSInteger state = row ? NU_STATE_ROW : 0;
-    if (volume) {
-        state |= NU_STATE_VOLUME;
-        if (NUViewUsesCustomVolume(npView)) state |= NU_STATE_VOLUME_CUSTOM;
-    }
+    if (NUViewShowsVolume(npView)) state |= NU_STATE_VOLUME;
     return state;
 }
 
-// Place the lock-screen volume row. Two paths, decided per view:
+// Place the volume row into the band reserved by NUVolumeGrowthForView and hidden from
+// Apple's layout pass by the -bounds clamp. It sits between Apple's content and the Up
+// Next row, which is Apple's own ordering: transport, then volume, then ours.
 //
-//   native — Apple's own row, revealed by the forced availability gates. It is inside
-//            Apple's -sizeThatFits:, so there is nothing for us to reserve or lay out;
-//            the platter grows through the existing height plumbing.
-//   custom — NUVolumeStripView, drawn into the strip NUVolumeGrowthForView reserved,
-//            directly ABOVE the Up Next row so the order reads like Apple's own player
-//            (transport → volume) with our row last.
-//
-// Every relayout request is deferred: asking for another pass from inside
-// -layoutSubviews would recurse. The native→custom decision is bounded by
-// NUVolumeNoteNativeMiss, so this settles within a few passes either way.
+// There is deliberately only ONE row here. Forcing Apple's own volume view visible put a
+// second, unusable slider on top of the transport controls — its layout has no slot for it
+// on the lock screen, so it never gets a height and hand-placing it does not make it
+// behave — so the availability gate is no longer forced at all and this draws the row.
 static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
     NUVolumeStripView *strip = nil;
     for (UIView *sub in npView.subviews)
@@ -80,61 +63,18 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
 
     if (!showVol) { strip.hidden = YES; return; }
 
-    // The band we reserved through -sizeThatFits: (NUVolumeGrowthForView) and hid from
-    // Apple's layout pass through the -bounds clamp. It sits between Apple's content and
-    // the Up Next row, which is Apple's own ordering: transport, then volume, then ours.
-    CGFloat volH = NUVolumeStripHeight();
-    CGFloat controlH = NUVolumeControlHeight();
-    CGRect b = npView.bounds;                       // clamp cleared → the real, grown height
-    CGFloat bandTop = b.size.height - rowH - volH;
-
-    if (!NUViewUsesCustomVolume(npView)) {
-        strip.hidden = YES;
-        if (NUVolumeRevealNative(npView)) {
-            NUVolumeClearNativeMiss(npView);
-            // Apple laid this out at the transport row's own y, because the lock-screen
-            // layout has no slot for it — so move it into the band. Keep Apple's x and
-            // width (its insets are already right) and take over y only, then bring it
-            // to the front so nothing drawn above can intercept the drag.
-            // Size AND place it, borrowing the scrubber's x and width so the two rows line
-            // up — Apple never lays this row out on the lock screen, so its own frame is
-            // not something to preserve.
-            UIView *native = NUVolumeNativeView(npView);
-            CGRect scrubber = NUVolumeScrubberFrame(npView);
-            CGFloat h = native.bounds.size.height > 1.0 ? native.bounds.size.height : controlH;
-            CGRect target;
-            if (!CGRectIsNull(scrubber)) {
-                target = CGRectMake(scrubber.origin.x, bandTop + (controlH - h) / 2.0,
-                                    scrubber.size.width, h);
-            } else {
-                target = CGRectMake(NUVolumeHorizontalInset(),
-                                    bandTop + (controlH - h) / 2.0,
-                                    b.size.width - 2.0 * NUVolumeHorizontalInset(), h);
-            }
-            if (!CGRectEqualToRect(native.frame, target)) native.frame = target;
-            [npView bringSubviewToFront:native];
-            NULogVolumeLayout(npView, NO, rowH + volH, nil);
-            return;
-        }
-        BOOL flipped = NUVolumeNoteNativeMiss(npView);
-        MRUNowPlayingViewController *vc = flipped ? NUOwningNowPlayingVC(npView) : nil;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [npView setNeedsLayout];
-            [vc nu_syncPlatterHeight];   // nil-safe: no-op until the decision flips
-        });
-        return;
-    }
-
     if (!strip) {
         strip = [[NUVolumeStripView alloc] initWithFrame:CGRectZero];
         [npView addSubview:strip];
-        NULog("volume: own strip attached to %{public}@", NSStringFromClass(npView.class));
+        NULog("volume: strip attached to %{public}@", NSStringFromClass(npView.class));
     }
+    CGFloat volH = NUVolumeStripHeight();
+    CGRect b = npView.bounds;                       // clamp cleared → the real, grown height
     strip.hidden = NO;
     [npView bringSubviewToFront:strip];
-    strip.frame = CGRectMake(0, bandTop, b.size.width, volH);
+    strip.frame = CGRectMake(0, b.size.height - rowH - volH, b.size.width, volH);
     [strip refreshFromSystem];
-    NULogVolumeLayout(npView, YES, rowH + volH, strip);
+    NULogVolumeLayout(npView, rowH + volH, strip);
 }
 
 %group NUNowPlaying
@@ -145,12 +85,6 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
 - (void)viewDidLoad {
     %orig;
     [[NUNextUpManager sharedManager] start];
-    // Discover and force MediaRemoteUI's volume-availability gates now: they have to be
-    // in place before Apple's first layout pass measures the player, and this is the
-    // earliest point at which the framework's classes are certain to be loaded (a %ctor
-    // is too early). Idempotent, and each forced gate re-reads the preference, so the
-    // Settings switch still applies live.
-    NUVolumeForceNativeGates();
     [self nu_ensureRow];
 }
 
@@ -289,26 +223,6 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
     BOOL needSync = (pushedShow == nil) ? (state != 0)
                                         : (pushedShow.integerValue != state || fabs(pushedW - curW) > 0.5);
 
-    // The state signature assumes OUR content is the only thing that can change the
-    // platter's fitting size. That holds for the Up Next row (constant height, ours to
-    // show or hide) but NOT for Apple's own volume row: the forced availability gates
-    // are consulted a layout pass or two after this VC first appears, so Apple grows
-    // its -sizeThatFits: with no state flip of ours to notice — and the short-circuit
-    // above then never pushes the taller size. The platter stays compact while Apple
-    // lays its volume row out anyway, which lands it on top of the transport row.
-    //
-    // So when the native volume row is in play, also accept a plain disagreement
-    // between what Apple now measures and what we last published. -sizeThatFits: on
-    // its own is cheap; the expensive part (invalidate + whole-chain setNeedsLayout +
-    // synchronous layoutIfNeeded) still only runs when there is a real difference.
-    if (!needSync && NUViewShowsVolume(self.view) && !NUViewUsesCustomVolume(self.view) && curW > 0) {
-        CGSize probe = [self.view sizeThatFits:CGSizeMake(curW, CGFLOAT_MAX)];
-        if (probe.height > 0 && fabs(probe.height - self.preferredContentSize.height) > 0.5) {
-            NULog("MRU: native volume row changed Apple's fit %.0f -> %.0f with no state flip",
-                  self.preferredContentSize.height, probe.height);
-            needSync = YES;
-        }
-    }
     if (!needSync) return;
     objc_setAssociatedObject(self, kNUPushedShowKey, @(state), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(self, kNUPushedWidthKey, @(curW), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -477,11 +391,6 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
         for (UIView *a = self; a; a = a.superview)
             if (PL && [a isKindOfClass:PL]) { gLSMediaPlatter = a; break; }
     }
-    // Belt and braces for the volume gates: -viewDidLoad already installed them, but a
-    // player view that was created before this process loaded the tweak reaches layout
-    // without ever having passed through it. dispatch_once inside, so this is free.
-    NUVolumeForceNativeGates();
-
     BOOL show = NUViewShowsRow(self);
     BOOL showVol = NUViewShowsVolume(self);
 
@@ -522,8 +431,6 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
         %orig;
     }
 
-    // After %orig, so the probe reads the frames Apple actually gave its own row.
-    if (showVol) NUVolumeProbeOnce(self);
     NULayoutVolumeRow(self, showVol, show ? NURowHeightForView(self) : 0.0);
 
     NUNextUpRowView *row = nil;
@@ -559,6 +466,7 @@ static void NULayoutVolumeRow(UIView *npView, BOOL showVol, CGFloat rowH) {
         // would keep failing the Dynamic Island's own gestures (the timestamp in
         // NUDITouchGet is the backstop; this clears it deterministically).
         NUDITouchSet(0);
+        NUVolumeTouchSet(0);   // same staleness hazard, same deterministic clear
         %init(NUNowPlaying);
     }
 }

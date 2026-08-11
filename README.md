@@ -166,120 +166,67 @@ killall SpringBoard
 
 ## Lock-screen volume row
 
-`MRUNowPlayingView` has a `volumeControlsView` and lays it out in Control Center on
-every version we support. On the lock screen it only appears while MediaRemote thinks
-the session's volume is controllable — i.e. on AirPlay — so local playback gets no
-slider. Two ways back in, and `NUVolumeControls.m` implements both because which one
-works is an on-device question:
+`MRUNowPlayingView` has a `volumeControlsView` and lays it out in Control Center on every
+version we support. On the lock screen it does not, and that turned out to be
+unrecoverable rather than merely gated. Forcing the availability gate — the discovered
+selector is `-[MRUNowPlayingView showVolumeControlsView]`, found by walking MediaRemoteUI's
+classes for volume-shaped `BOOL` getters — does make Apple create the view, but the
+lock-screen layout has no slot for it: `-sizeThatFits:` never budgets for the row and the
+view is laid out at exactly the transport row's `y`, so the two collide and the transport,
+drawn after, swallows every touch aimed at the slider. Hand-placing it did not make it
+behave either. That whole path is gone; the gate is no longer forced, so there is exactly
+one slider and nothing overlapping the controls.
 
-Apple's own row is also given a real chance now. `NUVolumeRevealNative` used to require a
-non-zero height — that is, that *Apple* had laid the row out — which on the lock screen
-never happens, so the fallback engaged every time and Apple's control was never actually
-tried. Existence is the whole test now; we size and place it ourselves, borrowing the
-scrubber's x and width from `timeControlsView` so the two rows align. `Use NextUp's Own
-Slider` forces our capsule instead, which is the escape hatch if Apple's view turns out to
-render empty when Apple didn't lay it out.
+What ships is `NUVolumeStripView`: speaker glyph, capsule track, speaker glyph, styled off
+the same adaptive foreground as the Up Next row, drawn into a band reserved exactly the way
+the row is (`NUVolumeGrowthForView` → `NUFitGrowthForView` → the `-bounds` clamp), directly
+above the row so the order reads like Apple's player. System volume goes through a write
+chain — `-setVolumeTo:forCategory:`, then `-setActiveCategoryVolumeTo:`, then the
+`MPVolumeSlider` inside the offscreen `MPVolumeView` that is there anyway for HUD
+suppression — and the strip subscribes to
+`AVSystemController_SystemVolumeDidChangeNotification` so it follows the hardware buttons.
+One Settings switch, `showVolumeSlider`.
 
-- **Native** (default): the availability gate isn't the same selector on every build,
-  so `NUVolumeForceNativeGates()` *discovers* it — it walks the classes in
-  MediaRemoteUI's image, finds every zero-argument `BOOL` getter whose selector
-  mentions volume, classifies it (`…Available` / `…SupportsVolume…` / `shouldShow…`
-  → force YES; `…Hidden` / `…Disabled` → force NO; anything that reads like live
-  interaction state — `isDragging`, `isTracking`, `…Muted` — is left alone) and
-  swizzles it through `imp_implementationWithBlock`. Each replacement re-reads the
-  preference, so the Settings switch applies live and a disabled tweak calls through
-  to `%orig`. Apple then builds, wires and measures its own row, which means the
-  platter grows through Apple's own `-sizeThatFits:` and the existing height plumbing
-  carries it across the process boundary for free.
-- **Custom** (`Use NextUp's Own Slider`, or automatic after the native row stays
-  unlaid-out for three layout passes — which on the iOS 17 lock screen is what actually
-  happens, the layout having no slot for it): `NUVolumeStripView` — speaker glyph,
-  track, speaker glyph, styled off the same adaptive foreground as the Up Next row —
-  drawn into a band reserved exactly the way the row is (`NUVolumeGrowthForView` →
-  `NUFitGrowthForView` → the `-bounds` clamp), directly above the row so the order
-  reads like Apple's player. System volume goes through `AVSystemController`
-  (`getVolume:forCategory:` / `setVolumeTo:forCategory:`, category `Audio`), and the
-  strip subscribes to `AVSystemController_SystemVolumeDidChangeNotification` so it
-  follows the hardware buttons. A throwaway `MPVolumeView` sits offscreen inside the
-  strip purely to suppress SpringBoard's volume HUD.
+Three things about the track are load-bearing, and each was a bug first:
 
-  The track is `NUVolumeTrackView`, a small `UIControl`, **not** a `UISlider`. Apple's
-  now-playing sliders are a rounded capsule with no thumb that swells under the finger
-  (7pt → 14pt, springing back on release), and a `UISlider` is a thin track plus a round
-  thumb by construction — no amount of tinting gets you there. Tracking is deliberately
-  **relative**: touching down does not jump the volume to the touch's x. Apple can afford
-  jump-to-position on a scrubber, where a mistake costs you your place in a song; on
-  volume a stray tap near the right edge would blast the output. Reduce Motion gates the
-  swell, never the tracking.
+- **It is not a `UISlider`.** Apple's now-playing sliders are a rounded capsule with no
+  thumb that swells under the finger (7pt → 14pt, springing back on release); a `UISlider`
+  is a thin track plus a round thumb by construction. `NUVolumeTrackView` draws the capsule
+  itself.
+- **It is driven by a gesture recognizer, not `UIControl` tracking.** `UIControl` tracking
+  is view-level touch delivery, which an ancestor recognizer with `delaysTouchesBegan`
+  withholds and then cancels if it wins — and the lock screen is full of those. Gesture
+  recognizers are fed touches directly and are unaffected. This is the entire difference
+  between Apple's scrubber registering a drag and this registering nothing: no begin, so no
+  swell, so it read as a dead control that merely displayed the volume.
+- **A drag claims the touch across the process boundary.** `NUVolumeTouchSet` raises a
+  notify-state flag for the duration; `NUHooksSpringBoard` fails lock-screen paging and the
+  notification-list scroll while it is up, on `touchesMoved` as well as `touchesBegan`,
+  because those recognizers need movement to claim a touch and so are first reached on a
+  move. Scoping that to the strip's geometry is not enough — the touch starts on the slider
+  and then wanders, and the moment it leaves the band a geometry test stops protecting it,
+  which is exactly when the volume would stop following the finger. The flag carries a
+  timestamp rather than a bare 1, like the Dynamic Island's, so a process that dies
+  mid-drag cannot leave paging broken until reboot.
 
-  Two things had to be true before it responded to a finger at all, and both were
-  invisible from the outside because they produce the *same* symptom — a slider that
-  displays the volume, follows the hardware buttons, and ignores touch entirely:
+Tracking is deliberately **relative**: touching down does not jump the volume to the
+touch's x. Apple can afford jump-to-position on a scrubber, where a mistake costs you your
+place in a song; on volume a stray tap near the right edge would blast the output. Reduce
+Motion gates the swell, never the tracking.
 
-  1. `NUHooksSpringBoard`'s paging blocker was scoped to the Up Next row's height. The
-     volume band sits above the row, so a horizontal drag there was claimed by
-     SpringBoard's `UIScrollViewPagingSwipeGestureRecognizer` — with
-     `delaysTouchesBegan`, so the touch never reached the control. No begin, no swell.
-     The protected band is now the sum of whatever surfaces are switched on.
-  3. And the one that actually mattered: the control was driven by **UIControl touch
-     tracking** — `-touchesBegan:` on the view. That is view-level touch delivery, and an
-     ancestor recognizer with `delaysTouchesBegan` withholds it until the recognizer
-     decides, then cancels it outright if the recognizer wins. The lock screen is thick
-     with such recognizers. Gesture recognizers, by contrast, are fed touches directly and
-     are unaffected by another recognizer's delay — which is precisely why Apple's
-     scrubber registers a drag while an identical drag 40pt below it reached nothing at
-     all. The track is now driven by a `UILongPressGestureRecognizer` with
-     `minimumPressDuration = 0`, the same shape of input Apple's own sliders use, and it
-     allows simultaneous recognition so a volume drag coexists with the lock screen's
-     pans instead of fighting them.
-  2. The control set `enabled = NO` whenever `-setVolumeTo:forCategory:` was missing,
-     which kills tracking (and therefore the swell) as thoroughly as a stolen touch.
-     It is never disabled now; instead the write walks a chain —
-     `-setVolumeTo:forCategory:`, then `-setActiveCategoryVolumeTo:`, then the
-     `MPVolumeSlider` inside the offscreen `MPVolumeView` that is already there for HUD
-     suppression — and logs which one took the value, once, on change.
+Scope is the lock screen on iOS 16 and 17 — the versions whose lock-screen player is the
+`MRUNowPlayingView` that Control Center shares. iOS 14/15 host it in-process behind
+`CSMediaControlsViewController` (different height levers, see `NUHooksLockScreen14/15`) and
+iOS 18 replaced it with `MRULockscreenView`, so the Settings row hides itself there rather
+than offering a dead toggle. Control Center and the Dynamic Island already have Apple's
+slider and are untouched.
 
-Scope is **the lock screen on iOS 16 and 17** — the versions whose lock-screen player
-is the `MRUNowPlayingView` that Control Center shares. iOS 14/15 host it in-process
-behind `CSMediaControlsViewController` (different height levers, see
-`NUHooksLockScreen14/15`) and iOS 18 replaced it with `MRULockscreenView`, so the
-Settings rows hide themselves there rather than offering a dead toggle. Control Center
-and the Dynamic Island already have Apple's slider and are untouched.
-
-A note on the platter height, because it is the subtle part. The Up Next row's height
-is constant and ours to show or hide, so `-nu_syncPlatterHeight` short-circuits on a
-show-state signature. Apple's native volume row breaks that assumption: the forced
-gates are consulted a layout pass or two after the VC appears, so Apple's own
-`-sizeThatFits:` grows with no state flip for the signature to notice, the taller size
-is never published, and Apple lays its volume row out into a platter that never grew —
-landing it on top of the transport row. So when the native row is in play the sync also
-accepts a plain disagreement between Apple's current fit and the last published
-`preferredContentSize`; `-sizeThatFits:` alone is cheap, and the expensive forced
-relayout still only runs on a real difference.
-
-Measured on-device afterwards, and the assumption above was still too generous: Apple's
-lock-screen `-sizeThatFits:` does not budget for the volume row *at all*, gate forced or
-not. The platter grew by the Up Next row's height alone and the volume view was laid out
-at exactly the transport row's y — both visible, overlapping, with the transport drawn
-after and therefore swallowing every touch aimed at the slider. The lock-screen layout
-simply has no slot for that row; forcing the gate makes it appear without making room.
-
-So `NUVolumeGrowthForView` now reserves the band in **both** modes, the `-bounds` clamp
-hides it from Apple's layout pass as it already did for the row, and `NULayoutVolumeRow`
-takes over the native view's `y` — keeping Apple's x and width, whose insets are already
-right — and brings it to the front so nothing above it can intercept the drag.
-
-Settings › Diagnostics has **Export Debug Log**, which collects
-`/var/mobile/nu/nextup3-*.log` plus the device/OS/preference state into one text file
-and opens the share sheet. The libSandy profile grants read-write on `/var/mobile/nu`
-(and the postinst creates it) so the sandboxed processes — the media apps, and
-MediaRemoteUI, which draws the lock-screen player — land their logs there too instead of
-in a container tmp nothing else can read.
-
-If the row doesn't turn up, build with `make package DEBUG=1` and unlock with music
-playing: `NUVolumeProbeOnce` dumps every volume-shaped selector MediaRemoteUI declares,
-its return encoding, its live answer on the player, and how the classifier scored it —
-which is enough to name the real gate instead of guessing at it.
+Settings › Diagnostics has **Export Debug Log**, which collects `/var/mobile/nu/nextup3-*.log`
+plus any recent crash reports and the device/OS/preference state into one text file and
+opens the share sheet. Note that MediaRemoteUI — the process that draws the lock-screen
+player, and so the one whose log matters most here — still writes into its own container
+despite the libSandy read-write extension on that directory; its log is reachable only
+through Filza.
 
 ## Building for arm64e off a Mac
 

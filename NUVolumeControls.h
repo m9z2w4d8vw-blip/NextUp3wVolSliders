@@ -1,104 +1,66 @@
 // NUVolumeControls — the lock-screen volume row.
 //
-// Apple's now-playing player has a volume row (MRUNowPlayingView.volumeControlsView,
-// declared in NUPrivate.h) and lays it out in Control Center on every version we
-// support, but on the LOCK SCREEN it only appears while the session is routed to a
-// device whose volume MediaRemote can control (AirPlay). For local playback the
-// player decides the hardware buttons suffice and the row is never laid out, so the
-// platter has no slider at all.
+// Apple's now-playing player has a volume row of its own
+// (MRUNowPlayingView.volumeControlsView, declared in NUPrivate.h) and lays it out in
+// Control Center on every version we support. On the LOCK SCREEN it does not: the
+// layout has no slot for that row, so even with the availability gate forced YES the
+// view is created but never given a height, and placing it by hand lands it on top of
+// the transport row. That path was tried at length and abandoned — see the README.
 //
-// Two ways to get it back, and this file implements both because which one works is
-// an on-device question:
+// So this draws the row itself: NUVolumeStripView, a speaker glyph, a capsule track and
+// a speaker glyph, placed into a band the tweak reserves in the platter exactly the way
+// it reserves one for the Up Next row (NUVolumeGrowthForView → NUFitGrowthForView → the
+// -bounds clamp in NUHooksNowPlaying), directly above that row so the order reads like
+// Apple's own player: transport, volume, Up Next.
 //
-//   NATIVE  — force MediaRemoteUI's own "this session's volume is controllable"
-//             gates to YES so Apple builds, wires and lays out its own row. Nothing
-//             to style and nothing to size: the row is inside Apple's own
-//             -sizeThatFits:, so the existing platter-height plumbing in
-//             NUHooksNowPlaying already carries it across the process boundary.
-//             The gate selector is not the same on every build, so the gates are
-//             DISCOVERED at runtime rather than named (NUVolumeForceNativeGates).
+// Two details that are not obvious and were each a bug:
 //
-//   CUSTOM  — draw NUVolumeStripView into a strip we reserve ourselves, exactly the
-//             way NUNextUpRowView is placed, and drive the system volume through
-//             AVSystemController. Used when the user asks for it, and automatically
-//             when the native row refuses to materialise.
+//   * The track is a UIControl driven by a GESTURE RECOGNIZER, not by UIControl's own
+//     touch tracking. UIControl tracking is view-level touch delivery, which an ancestor
+//     recognizer with delaysTouchesBegan withholds and then cancels if it wins — and the
+//     lock screen is full of those. Gesture recognizers are fed touches directly and are
+//     unaffected. This is the difference between Apple's scrubber working and this not.
 //
-// SCOPE: the lock screen on iOS 16 and 17 — the versions whose lock-screen player is
-// the MRUNowPlayingView that Control Center shares. iOS 14/15 host that player
-// in-process behind CSMediaControlsViewController (different height levers,
-// see NUHooksLockScreen14/15) and iOS 18+ replaced it with MRULockscreenView, so
-// neither is wired up here and the Settings rows hide themselves there.
+//   * While a drag is in progress the row raises a cross-process flag
+//     (NUVolumeTouchSet in NUShared.h) that SpringBoard reads to fail its own paging and
+//     scroll gestures, so a finger that strays off the platter keeps controlling the
+//     volume instead of handing the touch to the notification list. Same mechanism the
+//     Dynamic Island swipe already uses.
+//
+// SCOPE: the lock screen on iOS 16 and 17 — the versions whose lock-screen player is the
+// MRUNowPlayingView that Control Center shares. iOS 14/15 host that player in-process
+// behind CSMediaControlsViewController (different height levers, see
+// NUHooksLockScreen14/15) and iOS 18+ replaced it with MRULockscreenView, so neither is
+// wired up here and the Settings row hides itself there.
 #import <UIKit/UIKit.h>
 
-#pragma mark - Feature gates
+#pragma mark - Feature gate
 
 // Master + "showVolumeSlider" + an iOS whose lock screen we handle (16/17).
 BOOL NUVolumeFeatureEnabled(void);
 
-// "volumeSliderCustom": draw our own strip instead of unhiding Apple's.
-BOOL NUVolumeCustomPreferred(void);
+#pragma mark - Geometry
 
-// Height the volume row reserves in the platter — for OUR strip and for Apple's own
-// row alike, because Apple's lock-screen layout turns out not to budget for it (see
-// NULayoutVolumeRow): with the gate forced it lays the view out at the transport's own
-// y, so the two collide and the transport, drawn after, swallows the touches. We
-// therefore reserve the band ourselves in both modes and place the row into it.
+// Height the volume row reserves in the platter.
 CGFloat NUVolumeStripHeight(void);
 
-// The platter's horizontal content inset, for placing a row when the scrubber's frame is
-// unavailable to borrow from.
-CGFloat NUVolumeHorizontalInset(void);
-
 // The control's own height within that band; the remainder is the platter's bottom
-// inset, which has to stay empty. Used to centre either slider in the band.
+// inset, which has to stay empty.
 CGFloat NUVolumeControlHeight(void);
 
-#pragma mark - Native row
+// The platter's horizontal content inset.
+CGFloat NUVolumeHorizontalInset(void);
 
-// Discover and force MediaRemoteUI's volume-availability gates. Idempotent — the
-// swizzle happens once per process, and each replacement re-reads the preference on
-// every call, so toggling the switch in Settings takes effect without a respring.
-// Call from a point where MediaRemoteUI's classes are loaded (a hooked method body),
-// not from a %ctor.
-void NUVolumeForceNativeGates(void);
+#pragma mark - Backend state (for the layout diagnostics)
 
-// Apple's own volume row inside a now-playing view, or nil if this build doesn't
-// vend one.
-UIView *NUVolumeNativeView(UIView *nowPlayingView);
-
-// The scrubber's row frame, so the volume row can borrow its x and width and align with
-// it. CGRectNull when this build does not vend one.
-CGRect NUVolumeScrubberFrame(UIView *nowPlayingView);
-
-// Un-hide Apple's row and make it interactive. Returns YES if there is one at all — we
-// size and place it ourselves, so it does not have to have been laid out by Apple.
-BOOL NUVolumeRevealNative(UIView *nowPlayingView);
-
-// Apple's row stayed empty for several layout passes: give up on it for this view and
-// let the custom strip take over. Returns YES the pass the decision flips, so the
-// caller can re-sync the platter height once.
-BOOL NUVolumeNoteNativeMiss(UIView *nowPlayingView);
-
-// Forget a recorded miss (the native row turned up after all, e.g. AirPlay engaged).
-void NUVolumeClearNativeMiss(UIView *nowPlayingView);
-
-// State of the system-volume backend, for the layout diagnostics: can we write the
-// volume at all in this process, and what does it currently read as.
+// Can the system volume be written at all in this process, and what does it read as.
 BOOL NUVolumeSystemIsWritable(void);
 float NUVolumeSystemLevel(void);
 
-// One-shot dump of every volume-related gate, ivar and view state MediaRemoteUI
-// exposes, so an unknown build can be read off the log instead of guessed at.
-// DEBUG builds only — NULog compiles out of FINALPACKAGE.
-void NUVolumeProbeOnce(UIView *nowPlayingView);
+#pragma mark - The row
 
-#pragma mark - Our own strip
-
-// Speaker glyph + slider + speaker glyph, styled like the player's own controls and
-// backed by the system volume. Self-refreshing: it follows the hardware buttons and
-// any other volume change while it is on screen.
 @interface NUVolumeStripView : UIView
 + (CGFloat)preferredHeight;
-// Pull the current system volume into the slider (no-op while the user is dragging).
+// Pull the current system volume into the track (no-op while the user is dragging).
 - (void)refreshFromSystem;
 @end

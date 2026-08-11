@@ -71,6 +71,13 @@ static BOOL NUShouldBlockPaging(UIGestureRecognizer *gr, NSSet<UITouch *> *touch
     BOOL rowOn = NUInterfaceEnabled(NUHostLockScreen);
     BOOL volumeOn = NUVolumeFeatureEnabled();
     if (!rowOn && !volumeOn) return NO;
+    // A volume drag in progress wins outright, wherever the finger currently is. Scoping
+    // this to the strip's geometry is not enough: the touch STARTS on the slider and then
+    // wanders, and the moment it leaves the band a geometry test stops protecting it —
+    // which is exactly when paging or the notification list would take the touch away
+    // mid-adjust. The flag is raised for the whole drag instead. (Same reasoning as the
+    // Dynamic Island's own flag: the state of the gesture, not the position of the finger.)
+    if (NUVolumeTouchGet()) return YES;
     UIView *v = gr.view;
     if (!v) return NO;
     UIWindow *win = v.window;
@@ -108,8 +115,15 @@ static BOOL NUShouldBlockApertureSwipe(void) {
 
 %group SpringBoard
 
+// touchesMoved as well as touchesBegan: these recognizers need MOVEMENT to claim a touch,
+// so a drag that begins on the volume slider and then strays reaches them for the first
+// time on a move — by which point a touchesBegan-only guard has already let them through.
 %hook UIScrollViewPagingSwipeGestureRecognizer
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+    if (NUShouldBlockPaging(self, touches)) { self.state = UIGestureRecognizerStateFailed; return; }
+    %orig;
+}
+- (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
     if (NUShouldBlockPaging(self, touches)) { self.state = UIGestureRecognizerStateFailed; return; }
     %orig;
 }
@@ -117,6 +131,10 @@ static BOOL NUShouldBlockApertureSwipe(void) {
 
 %hook UIScrollViewPanGestureRecognizer
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+    if (NUShouldBlockPaging(self, touches)) { self.state = UIGestureRecognizerStateFailed; return; }
+    %orig;
+}
+- (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
     if (NUShouldBlockPaging(self, touches)) { self.state = UIGestureRecognizerStateFailed; return; }
     %orig;
 }

@@ -81,7 +81,6 @@ extern void * const kNUCCExpandedKey;  // Control Center card is in expanded con
 extern void * const kNUShowStateKey;   // last row-shown state on the now-playing view
 extern void * const kNURouteOpeningKey; // iOS 18 CC route picker opening (force-hide row)
 extern void * const kNURouteClosingKey; // iOS 18 CC route picker closing (force-show row)
-extern void * const kNUVolumeFallbackKey; // Apple's native volume row never materialised here
 
 #pragma mark - Now-playing host detection
 
@@ -421,22 +420,10 @@ static inline BOOL NUViewShowsVolume(UIView *view) {
     return YES;
 }
 
-// Are we drawing the slider ourselves for this view? Either the user asked for it, or
-// Apple's own row refused to materialise here (stamped by the layout hook).
-static inline BOOL NUViewUsesCustomVolume(UIView *view) {
-    return NUVolumeCustomPreferred()
-        || [objc_getAssociatedObject(view, kNUVolumeFallbackKey) boolValue];
-}
-
-// Height the volume row adds to the platter, in BOTH modes.
-//
-// This used to be custom-mode only, on the assumption that Apple's own -sizeThatFits:
-// budgets for its volume row once the availability gate is forced. On the iOS 17 lock
-// screen it does not: measured on-device, the platter grew by the Up Next row's height
-// alone and Apple laid its volume view out at exactly the transport row's y — both
-// visible, overlapping, with the transport on top eating every touch aimed at the
-// slider. The lock-screen layout simply has no slot for that row; forcing the gate
-// makes it appear without making room for it. So we reserve the band either way.
+// Height the volume row adds to the platter. Apple's own -sizeThatFits: never budgets for
+// a volume row on the lock screen — measured on-device, the platter grew by the Up Next
+// row's height alone and Apple's volume view landed at exactly the transport row's y — so
+// the band is always ours to reserve.
 static inline CGFloat NUVolumeGrowthForView(UIView *view) {
     return NUViewShowsVolume(view) ? NUVolumeStripHeight() : 0.0;
 }

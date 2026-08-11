@@ -228,8 +228,7 @@ static UIImage *NUAppIconImage(NSString *bundleID) {
             NSString *key = [spec propertyForKey:@"key"];
             if ([key isEqualToString:@"showDynamicIsland"] && !NUDeviceHasDynamicIsland())
                 continue;                                          // no island → no toggle
-            if (([key isEqualToString:@"showVolumeSlider"] || [key isEqualToString:@"volumeSliderCustom"])
-                && !NUVolumeRowSupported())
+            if ([key isEqualToString:@"showVolumeSlider"] && !NUVolumeRowSupported())
                 continue;                                          // unimplemented on this iOS
             NSString *bundleID = NUBundleIDForKey(key);
             if (bundleID && !NUAppInstalled(bundleID)) continue;   // app not on device → drop it
@@ -345,8 +344,7 @@ static NSArray<NSString *> *NUCrashReportPrefixes(void) {
 static NSArray<NSString *> *NUAllPrefKeys(void) {
     return @[ @"Enabled", @"enabledMusic", @"enabledPodcasts", @"enabledYouTubeMusic",
               @"enabledSpotify", @"showLockScreen", @"showDynamicIsland",
-              @"showControlCenter", @"showVolumeSlider", @"volumeSliderCustom",
-              @"skipProviders" ];
+              @"showControlCenter", @"showVolumeSlider", @"skipProviders" ];
 }
 
 - (NSString *)_nuBuildLogReport {
@@ -366,7 +364,6 @@ static NSArray<NSString *> *NUAllPrefKeys(void) {
         // Defaults here only matter for a key never written; the two volume keys
         // default off, everything else on — same as Root.plist.
         BOOL def = ![key isEqualToString:@"showVolumeSlider"]
-                && ![key isEqualToString:@"volumeSliderCustom"]
                 && ![key isEqualToString:@"skipProviders"];
         [out appendFormat:@"  %-22@ %@\n", key, NUPrefBool(key, def) ? @"on" : @"off"];
     }
