@@ -43,12 +43,11 @@ controls and the Up Next row. One Settings switch turns it on. The
 [deep dive](#lock-screen-volume-row) covers how it works and why each part is shaped the way
 it is.
 
-**A CI build that works without a Mac** — `.github/workflows/build.yml` builds rootless
-`.deb`s on every push and attaches them to a GitHub Release. It runs on a **macOS** runner
-for the real `arm64 arm64e` package, because the Theos Linux toolchain cannot produce a
-loadable arm64e slice for this tweak; see
-[Building for arm64e off a Mac](#building-for-arm64e-off-a-mac) for the failure mode, which
-is a dylib that kills every process it is injected into.
+**CI that builds all three jailbreak variants** — `.github/workflows/build.yml` builds
+rootful, rootless and roothide on every push and publishes them as one labelled Release. It
+runs on **macOS** runners, because the Theos Linux toolchain cannot produce a loadable arm64e
+slice for this tweak; see [Building for arm64e off a Mac](#building-for-arm64e-off-a-mac) for
+the failure mode, which is a dylib that kills every process it is injected into.
 
 **Two portability fixes to upstream code**, both of which would be worth sending back:
 
@@ -143,22 +142,20 @@ iPhone 13 (iPhone14,5) running iOS 17.0 with rootless Dopamine.
 
 ## Install
 
-Grab a `.deb` from this fork's [Releases](../../releases) — every push builds one — and
-install it with Sileo / Filza / `dpkg -i`. Each release carries four packages; **the one you
-want is `…_iphoneos-arm64-xcode.deb`**:
+Grab the `.deb` for your jailbreak from this fork's [Releases](../../releases) — every push
+builds one — and install it with Sileo / Filza / `dpkg -i`:
 
-| deb | built with | use |
-| --- | --- | --- |
-| `com.yves.nextup3_<ver>_iphoneos-arm64-xcode.deb` | macOS runner, Apple clang, `arm64 arm64e` | **this one** |
-| `…-1+debug_iphoneos-arm64-xcode.deb` | same, with `NULog` compiled in | for reporting a problem |
-| `…_iphoneos-arm64-linux-arm64only.deb` | Ubuntu runner, `ARCHS=arm64` | fallback only |
-| `…-1+debug_iphoneos-arm64-linux-arm64only.deb` | same, debug | fallback only |
+| asset | for |
+| --- | --- |
+| `com.yves.nextup3_<ver> (rootful)` | classic jailbreaks (libhooker), the iOS 14.2 build |
+| `com.yves.nextup3_<ver> (rootless)` | Dopamine, palera1n |
+| `com.yves.nextup3_<ver> (roothide)` | RootHide Dopamine |
 
-All four are **rootless** (Dopamine, palera1n). The Linux-built pair exists because the Theos
-Linux toolchain cannot emit a loadable arm64e slice for this tweak — see
-[Building for arm64e off a Mac](#building-for-arm64e-off-a-mac) — so it is arm64-only, whose
-worst case is a dylib that never loads rather than one that crashes its host. For upstream's
-unmodified tweak, use **[Havoc](https://havoc.app/package/nextup3)** instead.
+Debug builds — the same packages with `NULog` compiled in, which is what makes the Settings log
+export produce anything — are attached to the **Actions run** for the same commit rather than
+the Release, to keep it uncluttered. Install one of those if you are reporting a problem.
+
+For upstream's unmodified tweak, use **[Havoc](https://havoc.app/package/nextup3)** instead.
 
 Dependencies (installed automatically): `libSandy`, `PreferenceLoader`, and
 ElleKit or Substrate. The package restarts the media apps by itself; just
@@ -175,6 +172,8 @@ Then: **Settings › NextUp 3 › Volume › Volume Slider**. Off by default.
   makes. An offscreen `MPVolumeView` is installed there to suppress it, which evidently is not
   enough. Cosmetic, and the next thing to fix.
 - The volume slider is **iOS 16 – 17 only**, and verified on 17.0 specifically.
+- The **rootful and roothide** packages are built by CI but have not been installed on a
+  device — only the rootless one has. They compile; that is all that is currently known.
 - Apple Podcasts is not yet verified on iOS 26 (every other app and surface is).
 - Spotify and YouTube Music integrations are built against specific app versions
   (see table above); an app update can silently break them until the tweak is
@@ -259,17 +258,26 @@ Two things about the Makefile that will bite otherwise:
 ### Continuous integration
 
 `.github/workflows/build.yml` builds on every push to `main` and publishes a Release tagged
-`v<version>-build.<run number>`, with the debs attached and the run's artifacts as a backup.
-It builds the same rootless package twice:
+`v<version>-build.<run number>` titled `NextUp 3 v<version> (build N)`, carrying one deb per
+jailbreak variant:
 
-| job | runner | `ARCHS` | why |
+| job | flags | Theos | deb arch tag |
 | --- | --- | --- | --- |
-| `xcode-arm64e` | `macos-latest` | `arm64 arm64e` | Apple's clang accepts `-fno-ptrauth-objc-class-ro`, so the arm64e slice is loadable. This is the shipping deb. |
-| `linux-arm64` | `ubuntu-latest` | `arm64` | The Theos Linux toolchain has no such flag, so it cannot emit a usable arm64e slice. Fallback. |
+| `rootful` | `ROOTFUL=1` | [theos/theos](https://github.com/theos/theos) | `iphoneos-arm` |
+| `rootless` | `ROOTLESS=1` | theos/theos | `iphoneos-arm64` |
+| `roothide` | *(default)* | [roothide/theos](https://github.com/roothide/theos) — the `roothide` package scheme only exists in the fork | `iphoneos-arm64e` |
 
-Both jobs `grep` the build output for `NextUp3: ptrauth-safe` and **refuse to publish**
-without it, because the alternative — a silently mis-compiled arm64e slice — kills every
-process the tweak is injected into.
+Every job runs on **`macos-latest`**. Apple's clang is the only one that accepts
+`-fno-ptrauth-objc-class-ro`, and without it an arm64e slice kills every process the tweak is
+injected into — see [below](#building-for-arm64e-off-a-mac). The Makefile refuses to build such
+a slice, and each job additionally `grep`s the build output for `NextUp3: ptrauth-safe` and
+**refuses to publish** without it.
+
+Assets are uploaded with a display label (`gh release upload 'file#label'`), so the release
+reads `com.yves.nextup3_1.0.1 (rootless)` rather than the raw filename — the arch tag Theos
+already puts in the filename is what identifies the variant, so nothing is renamed. Debug
+builds go to the run's artifacts instead of the Release. `fail-fast` is off and the release job
+runs on `!cancelled()`, so one variant failing still ships the others.
 
 ## Lock-screen volume row
 
@@ -455,7 +463,7 @@ items are portability fixes that upstream would want, and the rest is additive.
 | File | Change |
 | --- | --- |
 | `NUVolumeControls.{h,m}` | **New.** The whole volume row: `NUVolumeStripView`, `NUVolumeTrackView`, the read/write chain, the HUD suppressor. |
-| `.github/workflows/build.yml` | **New.** CI (see [above](#continuous-integration)). |
+| `.github/workflows/build.yml` | **New.** CI: builds rootful / rootless / roothide on macOS and publishes a labelled Release (see [above](#continuous-integration)). |
 | `Makefile` | Target-aware `-fno-ptrauth-objc-class-ro` probe that `$(error)`s rather than silently omitting the flag; `NUVolumeControls.m` added to `NextUp3_FILES`. |
 | `hooks/NUHooksNowPlaying.x` | Volume band reserved in `-sizeThatFits:`; the `-bounds` clamp now carries an *amount* (row + band) instead of a flag; `NULayoutVolumeRow`; packed show-state; `%orig` split onto its own line. |
 | `hooks/NUHooksSpringBoard.x` | Paging/scroll blocker extended to the volume band and to `touchesMoved`; yields outright while a volume drag is in progress; applies published volume writes. |

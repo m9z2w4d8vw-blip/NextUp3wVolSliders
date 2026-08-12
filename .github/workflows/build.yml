@@ -1,20 +1,22 @@
-# Builds NextUp 3 rootless debs. Two runners on purpose, because the arm64e slice is
-# the whole problem:
+# Builds all three jailbreak variants and publishes them as one Release, the way upstream
+# does: three cleanly-labelled debs, one per jailbreak type.
 #
-#   xcode-arm64e (macOS)  — Apple's clang, so -fno-ptrauth-objc-class-ro exists and the
-#                           arm64e slice is built without signed class_ro pointers. This
-#                           is the deb to install. It is also how upstream builds.
-#   linux-arm64 (Ubuntu)  — the Theos Linux toolchain has no such flag, so an arm64e
-#                           slice from it kills every process it is injected into
-#                           (libobjc readClass, SIGBUS — verified on iOS 17.0). ARCHS is
-#                           forced to arm64 alone here, which is safe: worst case an
-#                           arm64-only dylib is not loaded into arm64e processes and the
-#                           tweak simply does nothing. Fallback only.
+# Everything runs on a macOS runner, because Apple's clang is the only one that accepts
+# -fno-ptrauth-objc-class-ro. The Theos Linux toolchain does not have that flag at all, and an
+# arm64e slice built without it emits signed class_ro pointers that kill every process the
+# tweak is injected into, inside libobjc's readClass(), before a line of tweak code runs. See
+# "Building for arm64e off a Mac" in the README. The Makefile refuses to build such a slice and
+# the guard below refuses to publish one, but the real fix is simply to use the right compiler.
 #
-# ARCHS has to be passed on the MAKE COMMAND LINE, not the environment: the Makefile
-# assigns it with `export ARCHS := …`, and a command-line variable is the only kind that
-# overrides a makefile assignment. It also has to go on `make clean` — the ptrauth block
-# is parsed on every invocation and would $(error) out of a bare clean.
+# The roothide variant needs the roothide FORK of Theos — the `roothide` package scheme only
+# exists there — so it gets its own job with its own checkout.
+#
+# Two Makefile quirks the steps below have to respect:
+#   * variant flags must be passed to `make clean` as well as `make package`. The whole file is
+#     parsed on every invocation, so a bare `make clean` falls through to the default branch,
+#     asks for the `roothide` scheme, and vanilla Theos rejects it before cleaning anything.
+#   * ARCHS is assigned with `export ARCHS := …`, so only a command-line variable can override
+#     it. Nothing here needs to — every variant already wants `arm64 arm64e`.
 name: Build deb
 
 permissions:
@@ -27,85 +29,71 @@ on:
 
 jobs:
   build:
-    name: ${{ matrix.label }}
-    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.variant }}
+    runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - label: xcode-arm64e
-            os: macos-latest
-            archs: arm64 arm64e
-            suffix: xcode
-          - label: linux-arm64
-            os: ubuntu-latest
-            archs: arm64
-            suffix: linux-arm64only
+          - variant: rootful
+            flags: ROOTFUL=1
+            theos: https://github.com/theos/theos
+          - variant: rootless
+            flags: ROOTLESS=1
+            theos: https://github.com/theos/theos
+          - variant: roothide
+            flags: ""
+            theos: https://github.com/roothide/theos
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Theos
         uses: Randomblock1/theos-action@v1
+        with:
+          theos-src: ${{ matrix.theos }}
 
-      # Which clang, and does it take the flag. Purely informational, never fatal — the
-      # Makefile enforces the outcome. Worth having in the log because "the flag does not
-      # exist" and "the triple is wrong" produce the same silent empty probe result, and
-      # only one of them is a toolchain limitation.
-      - name: Probe the ptrauth flag
-        continue-on-error: true
-        run: |
-          set +e
-          CLANG="$THEOS/toolchain/linux/iphone/bin/clang"
-          [ -x "$CLANG" ] || CLANG="$(xcrun -f clang 2>/dev/null || command -v clang)"
-          echo "clang: $CLANG"
-          echo "--- flag, no triple ---"
-          "$CLANG" -x objective-c -fsyntax-only -fno-ptrauth-objc-class-ro /dev/null; echo "rc=$?"
-          echo "--- flag + arm64e triple ---"
-          "$CLANG" -target arm64e-apple-ios15.0 -x objective-c -fsyntax-only \
-            -fno-ptrauth-objc-class-ro /dev/null; echo "rc=$?"
-          echo "--- arm64e triple alone ---"
-          "$CLANG" -target arm64e-apple-ios15.0 -x objective-c -fsyntax-only /dev/null; echo "rc=$?"
-
-      - name: Build (DEBUG — includes the volume probe)
-        run: |
-          set -euxo pipefail
-          mkdir -p out
-          make clean ROOTLESS=1 ARCHS="${{ matrix.archs }}"
-          make package ROOTLESS=1 ARCHS="${{ matrix.archs }}" DEBUG=1 2>&1 | tee build-debug.log
-          grep -q "NextUp3: ptrauth-safe" build-debug.log || {
-            echo "::error::class_ro ptrauth was not made safe; refusing to ship this deb"
-            exit 1
-          }
-          for f in packages/*.deb; do
-            mv "$f" "out/$(basename "${f%.deb}")-${{ matrix.suffix }}.deb"
-          done
-
+      # Release build first: it is the one that ships, so a failure here should be the
+      # failure that stops the job.
       - name: Build (release)
         run: |
           set -euxo pipefail
-          make clean ROOTLESS=1 ARCHS="${{ matrix.archs }}"
-          make package ROOTLESS=1 ARCHS="${{ matrix.archs }}" FINALPACKAGE=1 2>&1 | tee build-release.log
+          mkdir -p out
+          make clean ${{ matrix.flags }}
+          make package ${{ matrix.flags }} FINALPACKAGE=1 2>&1 | tee build-release.log
           grep -q "NextUp3: ptrauth-safe" build-release.log || {
             echo "::error::class_ro ptrauth was not made safe; refusing to ship this deb"
             exit 1
           }
-          for f in packages/*.deb; do
-            mv "$f" "out/$(basename "${f%.deb}")-${{ matrix.suffix }}.deb"
-          done
+          mv packages/*.deb out/
+
+      # Debug build: NULog compiled in, which is what makes the volume diagnostics and the
+      # Settings log export work. Kept out of the Release to leave it clean — it rides along
+      # as a workflow artifact instead.
+      - name: Build (DEBUG)
+        run: |
+          set -euxo pipefail
+          make clean ${{ matrix.flags }}
+          make package ${{ matrix.flags }} DEBUG=1 2>&1 | tee build-debug.log
+          grep -q "NextUp3: ptrauth-safe" build-debug.log || {
+            echo "::error::class_ro ptrauth was not made safe; refusing to ship this deb"
+            exit 1
+          }
+          mv packages/*.deb out/
 
       - name: List what we built
         run: ls -lh out/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nextup3-${{ matrix.label }}
+          name: nextup3-${{ matrix.variant }}
           path: out/*.deb
           if-no-files-found: error
 
   release:
     name: publish release
     needs: build
+    # Runs even if one variant failed, so a broken rootful build still ships the other two.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
@@ -117,47 +105,60 @@ jobs:
           path: debs
           merge-multiple: true
 
-      - name: Collect metadata
-        id: meta
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          found=(debs/*.deb)
-          echo "count=${#found[@]}" >> "$GITHUB_OUTPUT"
-          echo "version=$(grep -m1 '^Version:' control | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
-          ls -lh debs/ 2>/dev/null || echo "no debs to publish"
+          VERSION="$(grep -m1 '^Version:' control | cut -d' ' -f2)"
+          TAG="v${VERSION}-build.${GITHUB_RUN_NUMBER}"
 
-      - name: Publish to Releases
-        if: ${{ steps.meta.outputs.count != '0' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: v${{ steps.meta.outputs.version }}-build.${{ github.run_number }}
-        run: |
-          set -euo pipefail
-          cat > notes.md <<'EOF'
-          Automated build. Both debs are rootless (Dopamine); install ONE.
+          # Theos already distinguishes the variants by the deb's architecture tag, which is
+          # exactly how upstream's release does it — no renaming needed, just a readable label
+          # per asset. GitHub shows the label in place of the filename (file#label).
+          declare -A VARIANT=(
+            [iphoneos-arm]=rootful
+            [iphoneos-arm64]=rootless
+            [iphoneos-arm64e]=roothide
+          )
 
-          | deb | built with | use |
-          | --- | --- | --- |
-          | `...-xcode.deb` | macOS, Apple clang, arm64 + arm64e | **this one** |
-          | `...-linux-arm64only.deb` | Ubuntu, Theos Linux toolchain, arm64 only | fallback |
+          ASSETS=()
+          # rootful, rootless, roothide — in that order, so the release lists them that way.
+          for arch in iphoneos-arm iphoneos-arm64 iphoneos-arm64e; do
+            for f in debs/*_"${arch}".deb; do
+              case "$f" in *+debug*) continue;; esac      # debug builds stay in the artifacts
+              ASSETS+=("${f}#com.yves.nextup3_${VERSION} (${VARIANT[$arch]})")
+            done
+          done
 
-          The Linux toolchain has no `-fno-ptrauth-objc-class-ro`, so an arm64e slice
-          from it emits signed `class_ro` pointers and every injected process dies in
-          libobjc's `readClass()` before any tweak code runs. That build is therefore
-          arm64-only; the macOS build is the correct full-fat one.
+          if [ ${#ASSETS[@]} -eq 0 ]; then
+            echo "::warning::no release debs to publish"
+            exit 0
+          fi
+          printf 'publishing: %s\n' "${ASSETS[@]}"
 
-          `1.0.1-1+debug` has `NULog` compiled in, which is what makes the
-          `volume probe:` / `volume layout:` lines and the Settings log export work.
+          cat > notes.md <<EOF
+          See and skip the upcoming track — and set the volume — right from the Lock Screen,
+          Control Center and Dynamic Island. Works with Apple Music, Apple Podcasts, YouTube
+          Music and Spotify on iOS 14.2 – 26.
+
+          This fork adds a **volume slider to the Lock Screen player** (iOS 16 – 17). Turn it on
+          in Settings › NextUp 3 › Volume.
+
+          **Install:** download the \`.deb\` for your jailbreak below and install it with
+          Sileo / Filza / \`dpkg -i\`, then respring.
+
+          <sub>Built from \`${GITHUB_SHA:0:7}\`. Debug builds, with logging for the Settings log
+          export, are attached to [the Actions run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}).</sub>
           EOF
-          printf '\nCommit: %s\n' "$GITHUB_SHA" >> notes.md
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" debs/*.deb --clobber
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
           else
-            gh release create "$TAG" debs/*.deb \
+            gh release create "$TAG" "${ASSETS[@]}" \
               --target "$GITHUB_SHA" \
-              --title "$TAG" \
+              --title "NextUp 3 v${VERSION} (build ${GITHUB_RUN_NUMBER})" \
               --notes-file notes.md \
               --latest
           fi
